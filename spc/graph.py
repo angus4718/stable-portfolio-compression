@@ -1,8 +1,13 @@
 import heapq
+import logging
 import numpy as np
 import pandas as pd
 from typing import Optional
 from sklearn.decomposition import PCA
+
+# Module logger
+logger = logging.getLogger(__name__)
+
 
 class DistancesUtils:
     @staticmethod
@@ -30,9 +35,9 @@ class DistancesUtils:
         return price_df.pct_change()
 
     @staticmethod
-    def return_to_corr_df(return_df: pd.DataFrame,
-                          min_periods: int = 1,
-                          corr_method: str = "pearson") -> pd.DataFrame:
+    def return_to_corr_df(
+        return_df: pd.DataFrame, min_periods: int = 1, corr_method: str = "pearson"
+    ) -> pd.DataFrame:
         """
         Compute the correlation matrix across columns using pairwise overlapping samples.
         corr_method: 'pearson' (linear) or 'spearman' (rank).
@@ -55,7 +60,7 @@ class DistancesUtils:
         # Convert to correlation
         diag = np.diag(cov_matrix).copy()
         diag = np.where(diag <= 0.0, 0.0, diag)
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             inv_sd = 1.0 / np.sqrt(diag)
             inv_sd[~np.isfinite(inv_sd)] = 0.0
         D_inv = np.diag(inv_sd)
@@ -67,17 +72,19 @@ class DistancesUtils:
         return pd.DataFrame(Corr_hat, index=cols, columns=cols)
 
     @staticmethod
-    def pca_denoise_corr(return_df: pd.DataFrame,
-                         n_components: Optional[int] = None,
-                         explained_variance: Optional[float] = None,
-                         min_periods: int = 1) -> pd.DataFrame:
+    def pca_denoise_corr(
+        return_df: pd.DataFrame,
+        n_components: Optional[int] = None,
+        explained_variance: Optional[float] = None,
+        min_periods: int = 1,
+    ) -> pd.DataFrame:
         """
         Denoise correlation via PCA (principal component truncation).
 
         - If `n_components` supplied, use that many components.
         - Else if `explained_variance` supplied (0-1), choose smallest k explaining that fraction.
         - Else default to min(10, N-1).
-        
+
         Process:
         1. Compute correlation matrix (handles NaN via pairwise overlap).
         2. Apply PCA to correlation matrix.
@@ -86,17 +93,19 @@ class DistancesUtils:
         """
         if not isinstance(return_df, pd.DataFrame):
             raise TypeError("return_df must be a pandas DataFrame.")
-        
+
         # Compute correlation matrix
-        corr = DistancesUtils.return_to_corr_df(return_df, min_periods=min_periods, corr_method="pearson")
+        corr = DistancesUtils.return_to_corr_df(
+            return_df, min_periods=min_periods, corr_method="pearson"
+        )
         cols = corr.columns.tolist()
         corr_matrix = corr.values
-        
+
         # Replace NaN correlations with 0
         corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
-        
+
         n_assets = corr_matrix.shape[0]
-        
+
         # Determine number of components
         if n_components is not None:
             k = min(n_components, n_assets)
@@ -110,37 +119,42 @@ class DistancesUtils:
         else:
             # Default: use min(10, n_assets - 1)
             k = min(10, max(1, n_assets - 1))
-        
+
         # Apply PCA
         pca = PCA(n_components=k)
         pca.fit(corr_matrix)
-        
+
         # Reconstruct correlation matrix using truncated components
         corr_reconstructed = pca.inverse_transform(pca.transform(corr_matrix))
-        
+        logger.debug("PCA reconstructed correlation matrix:", corr_reconstructed)
+        # Enforce symmetry
+        corr_reconstructed = 0.5 * (corr_reconstructed + corr_reconstructed.T)
+
         # Clip to valid correlation range and fix diagonal
         corr_reconstructed = np.clip(corr_reconstructed, -1.0, 1.0)
         np.fill_diagonal(corr_reconstructed, 1.0)
-        
+
         # Return as DataFrame with original index/columns
         return pd.DataFrame(corr_reconstructed, index=cols, columns=cols)
 
-
-
     @staticmethod
-    def price_to_distance_df(price_df: pd.DataFrame,
-                             min_periods: int = 1,
-                             corr_method: str = "pearson",
-                             shrink_method: Optional[str] = None,
-                             pca_n_components: Optional[int] = None,
-                             pca_explained_variance: Optional[float] = None) -> pd.DataFrame:
+    def price_to_distance_df(
+        price_df: pd.DataFrame,
+        min_periods: int = 1,
+        corr_method: str = "pearson",
+        shrink_method: Optional[str] = None,
+        pca_n_components: Optional[int] = None,
+        pca_explained_variance: Optional[float] = None,
+    ) -> pd.DataFrame:
         """
         Pipeline: prices -> simple returns -> correlation -> optional denoising -> distance.
         """
         ret = DistancesUtils.price_to_return_df(price_df)
 
         if shrink_method is None:
-            corr = DistancesUtils.return_to_corr_df(ret, min_periods=min_periods, corr_method=corr_method)
+            corr = DistancesUtils.return_to_corr_df(
+                ret, min_periods=min_periods, corr_method=corr_method
+            )
         elif shrink_method == "lw":
             # NOT YET IMPLEMENTED
             pass
@@ -162,20 +176,20 @@ class UnionFind:
     def __init__(self, nodes):
         self.parents = {node: node for node in nodes}
         self.sizes = {node: 1 for node in nodes}
-    
+
     def find(self, node):
         if self.parents[node] == node:
             return node
-        
+
         parent = self.parents[node]
         self.parents[node] = self.find(parent)
         return self.parents[node]
-    
+
     def union(self, node1, node2):
         root1, root2 = self.find(node1), self.find(node2)
         if root1 == root2:
             return False
-        
+
         size1, size2 = self.sizes[root1], self.sizes[root2]
         if size1 > size2:
             self.parents[root2] = root1
@@ -183,16 +197,18 @@ class UnionFind:
         else:
             self.parents[root1] = root2
             self.sizes[root2] = size1 + size2
-        
+
         return True
 
     def get_size(self, node):
         return self.sizes[self.find(node)]
 
+
 class MST:
     """
-    Assume dense graph where every node is connected to every other node. 
+    Assume dense graph where every node is connected to every other node.
     """
+
     def __init__(self, adj_matrix, nodes):
         n = len(adj_matrix)
         if n == 0 or any(len(row) != n for row in adj_matrix):
@@ -215,10 +231,10 @@ class MST:
                 edges_heap.append((w, i, j))
         heapq.heapify(edges_heap)
         return edges_heap
-    
+
     def _prim(self):
         in_mst = [False] * self.n
-        key = [float('inf')] * self.n
+        key = [float("inf")] * self.n
         parent = [-1] * self.n
 
         key[0] = 0.0
@@ -232,7 +248,7 @@ class MST:
                     if w < key[v]:
                         key[v] = w
                         parent[v] = u
-        
+
         # Build adjacency dict with node names
         mst_adj_dict = {node: [] for node in self.nodes}
         for v in range(1, self.n):
