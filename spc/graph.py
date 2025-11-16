@@ -1,19 +1,10 @@
 import heapq
 import numpy as np
 import pandas as pd
+from typing import Optional
+from sklearn.decomposition import PCA
 
 class DistancesUtils:
-    @staticmethod
-    def _corr_to_distance(corr: float) -> float:
-        """
-        Map a single correlation rho in [-1, 1] to distance d = sqrt(2(1 - rho)).
-        """
-        if np.isnan(corr):
-            return np.nan
-        if corr < -1 or corr > 1:
-            raise ValueError('Correlation must be between -1 and 1.')
-        return float(np.sqrt(2.0 * (1.0 - corr)))
-
     @staticmethod
     def corr_to_distance_df(corr_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -58,16 +49,110 @@ class DistancesUtils:
             if valid.get(col, False):
                 corr.iat[i, i] = 1.0
         return corr
-    
+
+    @staticmethod
+    def cov_to_corr_matrix(cov_matrix: np.ndarray, cols: list[str]):
+        # Convert to correlation
+        diag = np.diag(cov_matrix).copy()
+        diag = np.where(diag <= 0.0, 0.0, diag)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            inv_sd = 1.0 / np.sqrt(diag)
+            inv_sd[~np.isfinite(inv_sd)] = 0.0
+        D_inv = np.diag(inv_sd)
+        Corr_hat = D_inv @ cov_matrix @ D_inv
+        Corr_hat = np.clip(Corr_hat, -1.0, 1.0)
+        for i in range(Corr_hat.shape[0]):
+            Corr_hat[i, i] = 1.0 if diag[i] > 0 else np.nan
+
+        return pd.DataFrame(Corr_hat, index=cols, columns=cols)
+
+    @staticmethod
+    def pca_denoise_corr(return_df: pd.DataFrame,
+                         n_components: Optional[int] = None,
+                         explained_variance: Optional[float] = None,
+                         min_periods: int = 1) -> pd.DataFrame:
+        """
+        Denoise correlation via PCA (principal component truncation).
+
+        - If `n_components` supplied, use that many components.
+        - Else if `explained_variance` supplied (0-1), choose smallest k explaining that fraction.
+        - Else default to min(10, N-1).
+        
+        Process:
+        1. Compute correlation matrix (handles NaN via pairwise overlap).
+        2. Apply PCA to correlation matrix.
+        3. Reconstruct correlation using truncated components.
+        4. Clip to valid range [-1, 1] and set diagonal to 1.
+        """
+        if not isinstance(return_df, pd.DataFrame):
+            raise TypeError("return_df must be a pandas DataFrame.")
+        
+        # Compute correlation matrix
+        corr = DistancesUtils.return_to_corr_df(return_df, min_periods=min_periods, corr_method="pearson")
+        cols = corr.columns.tolist()
+        corr_matrix = corr.values
+        
+        # Replace NaN correlations with 0
+        corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+        
+        n_assets = corr_matrix.shape[0]
+        
+        # Determine number of components
+        if n_components is not None:
+            k = min(n_components, n_assets)
+        elif explained_variance is not None:
+            # Use sklearn PCA to find k that explains the desired variance
+            pca_temp = PCA()
+            pca_temp.fit(corr_matrix)
+            cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
+            k = np.argmax(cumsum_var >= explained_variance) + 1
+            k = max(1, min(k, n_assets))
+        else:
+            # Default: use min(10, n_assets - 1)
+            k = min(10, max(1, n_assets - 1))
+        
+        # Apply PCA
+        pca = PCA(n_components=k)
+        pca.fit(corr_matrix)
+        
+        # Reconstruct correlation matrix using truncated components
+        corr_reconstructed = pca.inverse_transform(pca.transform(corr_matrix))
+        
+        # Clip to valid correlation range and fix diagonal
+        corr_reconstructed = np.clip(corr_reconstructed, -1.0, 1.0)
+        np.fill_diagonal(corr_reconstructed, 1.0)
+        
+        # Return as DataFrame with original index/columns
+        return pd.DataFrame(corr_reconstructed, index=cols, columns=cols)
+
+
+
     @staticmethod
     def price_to_distance_df(price_df: pd.DataFrame,
                              min_periods: int = 1,
-                             corr_method: str = "pearson") -> pd.DataFrame:
+                             corr_method: str = "pearson",
+                             shrink_method: Optional[str] = None,
+                             pca_n_components: Optional[int] = None,
+                             pca_explained_variance: Optional[float] = None) -> pd.DataFrame:
         """
         Pipeline: prices -> simple returns -> correlation -> optional denoising -> distance.
         """
         ret = DistancesUtils.price_to_return_df(price_df)
-        corr = DistancesUtils.return_to_corr_df(ret, min_periods=min_periods, corr_method=corr_method)
+
+        if shrink_method is None:
+            corr = DistancesUtils.return_to_corr_df(ret, min_periods=min_periods, corr_method=corr_method)
+        elif shrink_method == "lw":
+            # NOT YET IMPLEMENTED
+            pass
+        elif shrink_method == "pca":
+            corr = DistancesUtils.pca_denoise_corr(
+                ret,
+                n_components=pca_n_components,
+                explained_variance=pca_explained_variance,
+                min_periods=min_periods,
+            )
+        else:
+            raise ValueError("shrink_method must be one of {None, 'lw', 'pca'}")
 
         dist = DistancesUtils.corr_to_distance_df(corr)
         return dist
