@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Dict, List, Optional, Sequence, Set, Tuple, Any
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Any, Callable
 
 import numpy as np
 
@@ -72,6 +72,92 @@ class TreeUtils:
         items = list(d.items())
         return max(items, key=lambda kv: kv[1])[0]
 
+    @staticmethod
+    def remove_nodes_and_components(
+        adj: Dict[Any, List[Tuple[Any, float]]], remove: Set[Any]
+    ) -> List[Set[Any]]:
+        """
+        Remove 'remove' nodes from the tree, return connected components of the remaining graph.
+        """
+        remaining = set(adj.keys()) - remove
+        seen: Set[Any] = set()
+        comps: List[Set[Any]] = []
+
+        for s in list(remaining):
+            if s in seen:
+                continue
+            comp = set()
+            q = deque([s])
+            seen.add(s)
+            comp.add(s)
+            while q:
+                u = q.popleft()
+                for v, _ in adj[u]:
+                    if v in remaining and v not in seen:
+                        seen.add(v)
+                        comp.add(v)
+                        q.append(v)
+            comps.append(comp)
+        return comps
+
+    @staticmethod
+    def degrees(adj: Dict[Any, List[Tuple[Any, float]]]) -> Dict[Any, int]:
+        return {u: len(adj[u]) for u in adj}
+
+    @staticmethod
+    def path_betweenness_counts(
+        adj: Dict[Any, List[Tuple[Any, float]]],
+    ) -> Dict[Any, int]:
+        """
+        For a tree, the number of simple paths passing through a node equals:
+        sum over all unordered pairs of components created by removing that node.
+        If removing u yields component sizes s1, s2, ..., sd (d = degree(u)),
+        then betw(u) = sum_{i<j} s_i * s_j = ( (sum s_i)^2 - sum s_i^2 ) / 2.
+        Here sum s_i = n - 1 (excluding u).
+        """
+        nodes = list(adj.keys())
+        n = len(nodes)
+
+        # Root the tree arbitrarily and compute subtree sizes
+        root = nodes[0] if nodes else None
+
+        # Build parent/children with DFS
+        parent = {}
+        order = []
+        stack = [root] if root is not None else []
+        parent[root] = None
+        while stack:
+            u = stack.pop()
+            order.append(u)
+            for v, _ in adj[u]:
+                if v == parent.get(u):
+                    continue
+                parent[v] = u
+                stack.append(v)
+
+        # Post-order to compute subtree sizes
+        subtree = {u: 1 for u in nodes}
+        for u in reversed(order):
+            for v, _ in adj[u]:
+                if parent.get(v) == u:
+                    subtree[u] += subtree[v]
+
+        # For each node, component sizes when removing it:
+        # - for each child v: size = subtree[v]
+        # - for parent side: size = n - subtree[u]
+        betw = {}
+        for u in nodes:
+            comp_sizes = []
+            for v, _ in adj[u]:
+                if parent.get(v) == u:
+                    comp_sizes.append(subtree[v])
+                elif parent.get(u) == v:
+                    comp_sizes.append(n - subtree[u])
+            total = n - 1
+            sum_sq = sum(s * s for s in comp_sizes)
+            betw[u] = (total * total - sum_sq) // 2
+        return betw
+
 
 class BasisSelector:
     """
@@ -92,7 +178,6 @@ class BasisSelector:
         self,
         mst_adj: Dict[Any, List[Tuple[Any, float]]],
         nodes: Optional[Sequence[Any]] = None,
-        precompute_distances: bool = True,
     ):
         self.adj = mst_adj
         self.nodes = (
@@ -100,6 +185,9 @@ class BasisSelector:
         )
         self.n = len(self.nodes)
         self._dist = TreeUtils.all_pairs_tree_distance(self.adj, self.nodes)
+
+        self._deg = TreeUtils.degrees(self.adj)
+        self._betw = TreeUtils.path_betweenness_counts(self.adj)
 
     def _dist_uv(self, u: Any, v: Any) -> float:
         if self._dist is not None:
@@ -176,3 +264,179 @@ class BasisSelector:
                     nearest_dist[v] = dvb
 
         return B
+
+    def select_hub_branch(
+        self,
+        k: int,
+        h: Optional[int] = None,
+        alpha: float = 0.5,
+        weights: Optional[Dict[Any, float]] = None,
+        weight_gamma: float = 0.0,
+        rep_alpha: float = 0.5,
+    ) -> List[Any]:
+        """
+        Choose h hubs by maximizing combined centrality C(u) = alpha*deg(u) + (1-alpha)*betweenness(u),
+        then decompose tree minus hubs into branches (connected components) and add representatives
+        from the largest remaining branches by path length until |B|=k.
+
+        If h is None, we set h = max(1, min(k-1, round(0.2 * k))).
+        """
+        if k <= 0 or self.n == 0:
+            return []
+        if k >= self.n:
+            return list(self.nodes)
+        if h is None:
+            h = max(1, min(k - 1, int(round(0.2 * k))))
+
+        # Score for hubs: combine degree/betweenness centrality and optional weight importance
+        centrality = {
+            u: alpha * float(self._deg.get(u, 0))
+            + (1.0 - alpha) * float(self._betw.get(u, 0))
+            for u in self.nodes
+        }
+
+        # Normalize centrality and weights to [0,1] for blending
+        cen_vals = list(centrality.values())
+        cen_min = min(cen_vals) if cen_vals else 0.0
+        cen_max = max(cen_vals) if cen_vals else 1.0
+        cen_range = cen_max - cen_min if cen_max > cen_min else 1.0
+        norm_centrality = {u: (centrality[u] - cen_min) / cen_range for u in self.nodes}
+
+        if weights is None:
+            norm_weights = {u: 0.0 for u in self.nodes}
+        else:
+            w_vals = [float(weights.get(u, 0.0)) for u in self.nodes]
+            w_min = min(w_vals) if w_vals else 0.0
+            w_max = max(w_vals) if w_vals else 1.0
+            w_range = w_max - w_min if w_max > w_min else 1.0
+            norm_weights = {
+                u: (float(weights.get(u, 0.0)) - w_min) / w_range for u in self.nodes
+            }
+
+        # Blended score: low weight_gamma -> centrality-driven, high weight_gamma -> weight-driven
+        score = {
+            u: (1.0 - weight_gamma) * norm_centrality[u]
+            + weight_gamma * norm_weights[u]
+            for u in self.nodes
+        }
+        # Select top-h hubs
+        hubs = sorted(self.nodes, key=lambda u: score[u], reverse=True)[:h]
+        B = list(hubs)
+
+        # Remove hubs and get connected components (branches)
+        comps = TreeUtils.remove_nodes_and_components(self.adj, set(hubs))
+
+        # Compute nearest hub and distance for nodes
+        def nearest_hub(v: Any) -> Tuple[Any, float]:
+            best = (None, float("inf"))
+            for h_ in hubs:
+                d = self._dist_uv(v, h_)
+                if d < best[1]:
+                    best = (h_, d)
+            return best
+
+        reps = []  # (component, rep, distance-to-nearest-hub)
+        for comp in comps:
+            rep = None
+            best_score = -1.0
+            for v in comp:
+                _, d = nearest_hub(v)
+                w = norm_weights.get(v, 0.0)
+                # Combined representative score: rep_alpha * distance + (1-rep_alpha) * weight
+                rep_score = rep_alpha * float(d) + (1.0 - rep_alpha) * float(w)
+                if rep_score > best_score:
+                    best_score = rep_score
+                    rep = v
+            if rep is not None:
+                reps.append((comp, rep, best_score))
+
+        # Sort components by best_d descending (farther peripheries first)
+        reps.sort(key=lambda x: x[2], reverse=True)
+
+        # Add representatives until we reach k
+        i = 0
+        while len(B) < k and i < len(reps):
+            _, rep, _ = reps[i]
+            if rep not in B:
+                B.append(rep)
+            i += 1
+
+        # If still short, fill by farthest-point rule among remaining
+        if len(B) < k:
+            remaining = [v for v in self.nodes if v not in B]
+            # Reuse nearest-distance maintenance
+            nearest = {v: min(self._dist_uv(v, b) for b in B) for v in remaining}
+            while len(B) < k and remaining:
+                v_star = max(remaining, key=lambda v: nearest[v])
+                B.append(v_star)
+                remaining.remove(v_star)
+                for v in remaining:
+                    dvb = self._dist_uv(v, v_star)
+                    if dvb < nearest[v]:
+                        nearest[v] = dvb
+
+        return B
+
+    def select_error_driven(
+        self,
+        k: int,
+        E: Callable[[Set[Any]], float],
+        B_prev: Optional[Set[Any]] = None,
+        gamma: float = 0.0,
+        weights: Optional[Dict[Any, float]] = None,
+        weight_beta: float = 0.0,
+    ) -> List[Any]:
+        """
+        Greedy forward selection minimizing augmented out-of-sample error.
+
+        Parameters
+        - k: desired basis size
+        - E: callable returning scalar error for a set of basis nodes
+        - B_prev: prior period basis for turnover penalization (optional)
+        - gamma: nonnegative penalty weight for turnover
+
+        Returns
+        - List of selected nodes.
+        """
+        if k <= 0 or self.n == 0:
+            return []
+        if k >= self.n:
+            # Optionally still minimize E by picking best k, but by default return all
+            return list(self.nodes)
+
+        B: Set[Any] = set()
+        universe = set(self.nodes)
+        prev = set(B_prev) if B_prev is not None else set()
+
+        def turnover_size(Bset: Set[Any]) -> float:
+            if gamma <= 0.0:
+                return 0.0
+            add = Bset - prev
+            if weights is not None:
+                return float(sum(float(weights.get(x, 0.0)) for x in add))
+            # symmetric difference count fallback
+            return float(len(Bset ^ prev))
+
+        while len(B) < k and len(B) < len(universe):
+            best_v = None
+            best_score = float("inf")
+            for v in universe - B:
+                B_candidate = set(B)
+                B_candidate.add(v)
+                err = float(E(B_candidate))
+                pen = gamma * turnover_size(B_candidate) if gamma > 0.0 else 0.0
+                # Weight bias: prefer higher-weight stocks by reducing the score by weight_beta * weight(v)
+                weight_term = (
+                    -weight_beta * float(weights.get(v, 0.0))
+                    if weights is not None and weight_beta != 0.0
+                    else 0.0
+                )
+                s = err + pen + weight_term
+                if s < best_score:
+                    best_score = s
+                    best_v = v
+            if best_v is None:
+                break
+            B.add(best_v)
+
+        return list(B)
