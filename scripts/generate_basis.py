@@ -74,7 +74,7 @@ def select_basis(
     # Build MST adjacency
     dist_matrix = dist_df.values.tolist()
     tickers = list(dist_df.columns)
-    mst_adj = MST(dist_matrix, tickers).mst_adj
+    mst_adj = MST(dist_matrix, tickers).get_adj_dict()
 
     # Select basis using BasisSelector
     selector = BasisSelector(mst_adj, nodes=list(mst_adj.keys()))

@@ -140,11 +140,33 @@
       "description": "Path where the selected basis tickers will be saved",
       "type": "string"
     },
+    "basis_path": {
+      "value": "synthetic_data/basis_selected.csv",
+      "description": "Path to the basis CSV (used by local_ridge). Can override default location.",
+      "type": "string"
+    },
     
     "file_format": {
       "value": "csv",
       "description": "Output format for basis selection results",
       "type": "string"
+    }
+  },
+
+  "regression": {
+    "description": "Parameters for local regression post-processing",
+    "ridge_alpha": {
+      "value": 1.0,
+      "description": "Regularization strength for Ridge regression (alpha).",
+      "type": "float",
+      "min": 0.0
+    }
+    ,
+    "q_neighbors": {
+      "value": 3,
+      "description": "Number of nearest basis neighbors to use per regression (null = use all basis assets)",
+      "type": ["integer", "null"],
+      "min": 1
     }
   },
 

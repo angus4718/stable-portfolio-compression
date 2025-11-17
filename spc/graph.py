@@ -173,11 +173,11 @@ class DistancesUtils:
 
 
 class UnionFind:
-    def __init__(self, nodes):
+    def __init__(self, nodes: list[str]):
         self.parents = {node: node for node in nodes}
         self.sizes = {node: 1 for node in nodes}
 
-    def find(self, node):
+    def find(self, node: str) -> str:
         if self.parents[node] == node:
             return node
 
@@ -185,7 +185,7 @@ class UnionFind:
         self.parents[node] = self.find(parent)
         return self.parents[node]
 
-    def union(self, node1, node2):
+    def union(self, node1: str, node2: str) -> bool:
         root1, root2 = self.find(node1), self.find(node2)
         if root1 == root2:
             return False
@@ -200,7 +200,7 @@ class UnionFind:
 
         return True
 
-    def get_size(self, node):
+    def get_size(self, node: str) -> int:
         return self.sizes[self.find(node)]
 
 
@@ -209,7 +209,9 @@ class MST:
     Assume dense graph where every node is connected to every other node.
     """
 
-    def __init__(self, adj_matrix, nodes):
+    def __init__(
+        self, adj_matrix: list[list[float]], nodes: Optional[list[str]] = None
+    ):
         n = len(adj_matrix)
         if n == 0 or any(len(row) != n for row in adj_matrix):
             raise ValueError("Adjacency matrix must be non-empty and square.")
@@ -260,3 +262,6 @@ class MST:
             mst_adj_dict[node_v].append((node_u, w))
 
         return mst_adj_dict
+
+    def get_adj_dict(self) -> dict[str, list[tuple[str, float]]]:
+        return self.mst_adj
