@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 from sklearn.decomposition import PCA
+from sklearn.covariance import LedoitWolf
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -138,6 +139,29 @@ class DistancesUtils:
         return pd.DataFrame(corr_reconstructed, index=cols, columns=cols)
 
     @staticmethod
+    def lw_shrink_corr(return_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Estimate a shrunk covariance using Ledoit-Wolf and convert to a correlation DataFrame.
+        """
+        if not isinstance(return_df, pd.DataFrame):
+            raise TypeError("return_df must be a pandas DataFrame.")
+
+        cols = return_df.columns.tolist()
+
+        # Fill NaNs with column medians, otherwise with zeros
+        X = return_df.copy()
+        col_medians = X.median(axis=0)
+        X_filled = X.fillna(col_medians)
+        X_filled = X_filled.fillna(0.0)
+
+        # Fit Ledoit-Wolf estimator
+        lw = LedoitWolf().fit(X_filled.values)
+        cov_shrunk = lw.covariance_
+
+        corr_df = DistancesUtils.cov_to_corr_matrix(cov_shrunk, cols)
+        return corr_df
+
+    @staticmethod
     def price_to_distance_df(
         price_df: pd.DataFrame,
         min_periods: int = 1,
@@ -156,8 +180,7 @@ class DistancesUtils:
                 ret, min_periods=min_periods, corr_method=corr_method
             )
         elif shrink_method == "lw":
-            # NOT YET IMPLEMENTED
-            pass
+            corr = DistancesUtils.lw_shrink_corr(ret)
         elif shrink_method == "pca":
             corr = DistancesUtils.pca_denoise_corr(
                 ret,
