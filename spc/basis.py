@@ -1,6 +1,5 @@
 from collections import deque
 from typing import Dict, List, Optional, Sequence, Set, Tuple, Any, Callable
-
 import numpy as np
 
 
@@ -376,67 +375,3 @@ class BasisSelector:
                         nearest[v] = dvb
 
         return B
-
-    def select_error_driven(
-        self,
-        k: int,
-        E: Callable[[Set[Any]], float],
-        B_prev: Optional[Set[Any]] = None,
-        gamma: float = 0.0,
-        weights: Optional[Dict[Any, float]] = None,
-        weight_beta: float = 0.0,
-    ) -> List[Any]:
-        """
-        Greedy forward selection minimizing augmented out-of-sample error.
-
-        Parameters
-        - k: desired basis size
-        - E: callable returning scalar error for a set of basis nodes
-        - B_prev: prior period basis for turnover penalization (optional)
-        - gamma: nonnegative penalty weight for turnover
-
-        Returns
-        - List of selected nodes.
-        """
-        if k <= 0 or self.n == 0:
-            return []
-        if k >= self.n:
-            # Optionally still minimize E by picking best k, but by default return all
-            return list(self.nodes)
-
-        B: Set[Any] = set()
-        universe = set(self.nodes)
-        prev = set(B_prev) if B_prev is not None else set()
-
-        def turnover_size(Bset: Set[Any]) -> float:
-            if gamma <= 0.0:
-                return 0.0
-            add = Bset - prev
-            if weights is not None:
-                return float(sum(float(weights.get(x, 0.0)) for x in add))
-            # symmetric difference count fallback
-            return float(len(Bset ^ prev))
-
-        while len(B) < k and len(B) < len(universe):
-            best_v = None
-            best_score = float("inf")
-            for v in universe - B:
-                B_candidate = set(B)
-                B_candidate.add(v)
-                err = float(E(B_candidate))
-                pen = gamma * turnover_size(B_candidate) if gamma > 0.0 else 0.0
-                # Weight bias: prefer higher-weight stocks by reducing the score by weight_beta * weight(v)
-                weight_term = (
-                    -weight_beta * float(weights.get(v, 0.0))
-                    if weights is not None and weight_beta != 0.0
-                    else 0.0
-                )
-                s = err + pen + weight_term
-                if s < best_score:
-                    best_score = s
-                    best_v = v
-            if best_v is None:
-                break
-            B.add(best_v)
-
-        return list(B)

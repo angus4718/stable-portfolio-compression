@@ -59,7 +59,7 @@
   },
 
   "basis_selection": {
-    "description": "Parameters for basis asset selection. Choose method via 'basis_selection_method'. Supported: 'max_spread', 'max_spread_weighted', 'hub_branch', 'error_driven'",
+    "description": "Parameters for basis asset selection. Choose method via 'basis_selection_method'. Supported: 'max_spread', 'max_spread_weighted', 'hub_branch'",
 
     "basis_size": {
       "value": 10,
@@ -69,10 +69,10 @@
     },
 
     "basis_selection_method": {
-      "value": "error_driven",
-      "description": "Basis selection algorithm. Options: 'max_spread', 'max_spread_weighted', 'hub_branch', 'error_driven'",
+      "value": "max_spread_weighted",
+      "description": "Basis selection algorithm. Options: 'max_spread', 'max_spread_weighted', 'hub_branch'",
       "type": "string",
-      "options": ["max_spread", "max_spread_weighted", "hub_branch", "error_driven"]
+      "options": ["max_spread", "max_spread_weighted", "hub_branch"]
     },
 
     "use_weighted_selection": {
@@ -119,18 +119,6 @@
       "type": "float",
       "min": 0.0,
       "max": 1.0
-    },
-
-    "error_driven_gamma": {
-      "value": 0.0,
-      "description": "Turnover penalty for error_driven (0=none)",
-      "type": "float",
-      "min": 0.0
-    },
-    "error_driven_weight_beta": {
-      "value": 0.0,
-      "description": "Weight bias for error_driven (0=none)",
-      "type": "float"
     }
   },
 

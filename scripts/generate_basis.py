@@ -36,8 +36,6 @@ def select_basis(
     hub_branch_alpha: float = 0.5,
     hub_branch_weight_gamma: float = 0.0,
     hub_branch_rep_alpha: float = 0.5,
-    error_driven_gamma: float = 0.0,
-    error_driven_weight_beta: float = 0.0,
 ):
     prices = pd.read_csv(prices_path, index_col=0, parse_dates=True)
     prices = prices.sort_index()
@@ -103,18 +101,9 @@ def select_basis(
             rep_alpha=hub_branch_rep_alpha,
         )
         return basis
-    elif method == "error_driven":
-        raise NotImplementedError("Error function not implemented yet.")
-        print(
-            f"Using error-driven selection (gamma={error_driven_gamma}, weight_beta={error_driven_weight_beta})"
-        )
-        basis = selector.select_error_driven(
-            k, gamma=error_driven_gamma, weight_beta=error_driven_weight_beta
-        )
-        return basis
     else:
         raise ValueError(
-            "basis_selection_method must be one of {'max_spread', 'max_spread_weighted', 'hub_branch', 'error_driven'}"
+            "basis_selection_method must be one of {'max_spread', 'max_spread_weighted', 'hub_branch'}"
         )
 
 
@@ -150,12 +139,6 @@ def main():
     )
     hub_branch_rep_alpha = (
         config["basis_selection"].get("hub_branch_rep_alpha", {}).get("value", 0.5)
-    )
-    error_driven_gamma = (
-        config["basis_selection"].get("error_driven_gamma", {}).get("value", 0.0)
-    )
-    error_driven_weight_beta = (
-        config["basis_selection"].get("error_driven_weight_beta", {}).get("value", 0.0)
     )
     corr_method = config["distance_computation"]["corr_method"]["value"]
     min_periods = config["distance_computation"]["min_periods"]["value"]
@@ -201,8 +184,6 @@ def main():
         hub_branch_alpha=hub_branch_alpha,
         hub_branch_weight_gamma=hub_branch_weight_gamma,
         hub_branch_rep_alpha=hub_branch_rep_alpha,
-        error_driven_gamma=error_driven_gamma,
-        error_driven_weight_beta=error_driven_weight_beta,
     )
 
     out_path = Path(output_path)
