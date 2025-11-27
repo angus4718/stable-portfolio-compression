@@ -53,6 +53,31 @@
     }
   },
 
+  "market_cap_parameters": {
+    "description": "Parameters controlling the shares-outstanding (Pareto) sampler and removal eligibility",
+    "cap_pareto_alpha": {
+      "value": 1.2,
+      "description": "Pareto alpha for shares-outstanding sampler (lower -> heavier tail)",
+      "type": "float",
+      "min": 0.1,
+      "max": 10.0
+    },
+    "cap_scale": {
+      "value": 50.0,
+      "description": "Scale multiplier for shares-outstanding sampler",
+      "type": "float",
+      "min": 0.1,
+      "max": 1e6
+    },
+    "removal_bottom_pct": {
+      "value": 0.2,
+      "description": "Fraction of smallest names eligible for removal each month",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+
   "sector_volatility": {
     "description": "Monthly volatility for each sector (annualized / sqrt(12) for monthly equiv.)",
     "Technology": {
@@ -150,15 +175,5 @@
       "filename": "market_cap_values.csv",
       "description": "Market cap values for all tickers in dollars"
     }
-  },
-
-  "notes": {
-    "total_initial_assets": "n_sectors * assets_per_sector",
-    "sector_names": ["Technology", "Healthcare", "Finance", "Energy", "Consumer"],
-    "price_initialization": "All assets start at price = $100",
-    "shares_outstanding": "Randomly drawn from Uniform(10, 500) per asset",
-    "monthly_drift": "Randomly drawn from Uniform(0.5%, 1.5%)",
-    "nan_handling": "Assets that don't exist in a month are represented as NaN",
-    "membership_rule": "Top X assets by market cap are included in index each month"
   }
 }

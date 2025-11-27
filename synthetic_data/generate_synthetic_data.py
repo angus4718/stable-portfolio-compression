@@ -1,9 +1,15 @@
 """
-Generate synthetic price and market index weight data with dynamic asset membership.
+Generate synthetic price and market-index weight data with dynamic asset membership.
 
-This script creates two CSV files:
-1. prices_monthly.csv: Monthly prices for assets (rows: first day of each month, cols: tickers)
-2. market_index_weights.csv: Market cap weights for assets in the index
+This module produces CSV files in the `synthetic_data` output directory. The outputs are:
+
+- `prices_monthly.csv`: monthly prices (index: start-of-month dates; columns: tickers)
+- `market_index_weights.csv`: normalized market-cap weights (index: dates; columns: tickers)
+- `market_cap_values.csv`: raw market-cap values used to compute weights
+
+The simulator models a dynamic universe with heavy-tailed market caps (Pareto-like
+shares-outstanding) and Poisson-distributed additions/removals. Removals are drawn
+from the smallest fraction of names by market cap (configurable).
 """
 
 import numpy as np
@@ -512,6 +518,13 @@ def main():
     # Override sector parameters from config
     simulator.sector_volatility = sector_volatility
     simulator.sector_correlation = sector_correlation
+
+    market_cap_params = config.get("market_cap_parameters", {})
+    simulator.cap_pareto_alpha = float(market_cap_params["cap_pareto_alpha"]["value"])
+    simulator.cap_scale = float(market_cap_params["cap_scale"]["value"])
+    simulator.removal_bottom_pct = float(
+        market_cap_params["removal_bottom_pct"]["value"]
+    )
 
     prices_df, all_tickers, monthly_tickers = simulator.simulate_prices()
     weights_df, market_cap_df = simulator.generate_market_weights(
