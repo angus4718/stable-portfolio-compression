@@ -26,17 +26,23 @@ class DynamicIndexSimulator:
         addition_rate: float = 0.01,
         random_seed: int = 42,
         index_size: int = None,
+        removal_bottom_pct: float = 0.2,
     ):
         """
         Initialize the simulator.
 
         Args:
-            n_sectors: Number of asset sectors
-            assets_per_sector: Initial assets per sector
-            n_months: Number of months to simulate
-            removal_rate: Fraction of assets removed each month
-            addition_rate: Fraction of new assets added each month
-            random_seed: Random seed for reproducibility
+            n_sectors: Number of asset sectors.
+            assets_per_sector: Initial assets per sector.
+            n_months: Number of months to simulate.
+            removal_rate: Per-stock expected removal rate per month.
+            addition_rate: Per-stock expected addition rate per month.
+            random_seed: Random seed for reproducibility.
+            index_size: Number of constituents to keep in the index (optional).
+            removal_bottom_pct: Fraction of smallest names eligible for removal.
+
+        Returns:
+            None
         """
         self.n_sectors = n_sectors
         self.assets_per_sector = assets_per_sector
@@ -44,8 +50,8 @@ class DynamicIndexSimulator:
         self.removal_rate = removal_rate
         self.addition_rate = addition_rate
         self.random_seed = random_seed
-        # Fixed index size (number of constituents to keep each month)
-        # If None, default to full initial universe size
+        # Fixed index size (number of constituents to keep each month).
+        # If None, use the full initial universe size.
         self.index_size = (
             index_size
             if index_size is not None
@@ -53,6 +59,13 @@ class DynamicIndexSimulator:
         )
 
         np.random.seed(random_seed)
+
+        # controls for skewed market cap (shares outstanding) distribution
+        # lower alpha -> heavier tail (more skew). Tune these to adjust concentration.
+        self.cap_pareto_alpha = 1.2
+        self.cap_scale = 50.0
+        # Fraction (0-1) of the smallest market-cap names eligible for removal.
+        self.removal_bottom_pct = removal_bottom_pct
 
         # Initialize sector properties
         self.sector_names = [
@@ -90,7 +103,14 @@ class DynamicIndexSimulator:
         self.asset_sectors = self.initial_asset_sectors.copy()
 
     def _create_initial_assets(self) -> None:
-        """Create initial set of assets."""
+        """Create the initial set of assets and record their sectors.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
         self.initial_assets = []
         self.initial_asset_sectors = {}
 
@@ -105,8 +125,28 @@ class DynamicIndexSimulator:
                     "sector": sector,
                 }
 
+    def _sample_shares_outstanding(self) -> float:
+        """Sample a skewed shares-outstanding value so market caps are heavy-tailed.
+
+        Args:
+            None
+
+        Returns:
+            A positive float representing shares outstanding for a ticker.
+        """
+        val = (np.random.pareto(self.cap_pareto_alpha) + 1.0) * self.cap_scale
+        return float(max(val, 1.0))
+
     def _generate_ticker(self, sector: str, idx: int) -> str:
-        """Generate a unique ticker symbol."""
+        """Generate a unique ticker symbol for a sector and index.
+
+        Args:
+            sector: Sector name used as a prefix.
+            idx: Integer index (for uniqueness).
+
+        Returns:
+            A string representing the new ticker.
+        """
         sector_prefix = sector[:3].upper()
         ticker = f"{sector_prefix}{self.total_assets_created:04d}"
         self.total_assets_created += 1
@@ -137,13 +177,16 @@ class DynamicIndexSimulator:
         return cov
 
     def simulate_prices(self) -> Tuple[pd.DataFrame, List[str]]:
-        """
-        Simulate monthly prices with dynamic asset membership.
-        Assets are selected based on market cap ranking each month.
+        """Simulate monthly prices for a dynamic universe.
+
+        Constituents are chosen each month by market-cap ranking.
+
+        Args:
+            None
 
         Returns:
-            prices_df: DataFrame with monthly prices (index: date, columns: tickers)
-            all_tickers: List of all tickers that existed at any point
+            prices_df: DataFrame of monthly prices (index: date, columns: tickers).
+            all_tickers: Sorted list of all tickers that ever existed.
         """
         # Generate monthly dates
         start_date = datetime(2025, 12, 1) - pd.DateOffset(months=self.n_months - 1)
@@ -160,26 +203,27 @@ class DynamicIndexSimulator:
         # Generate shares outstanding for all assets (this doesn't change)
         self.shares_outstanding = {}
         for ticker in self.initial_assets:
-            self.shares_outstanding[ticker] = np.random.uniform(10, 500)
+            # use skewed distribution so a small set of names dominate market cap
+            self.shares_outstanding[ticker] = self._sample_shares_outstanding()
 
         # Initialize prices for all assets
         for ticker in self.initial_assets:
-            self.prices[ticker] = [100.0]  # Starting price
+            self.prices[ticker] = [100.0]
 
-        # Track all tickers ever created
+        # Track the full universe and the currently existing tickers
         all_tickers_set = set(self.initial_assets)
         all_existing_tickers = set(self.initial_assets)
 
-        # Initialize market cap tracking
+        # Initialize market-cap time series for each ticker
         self.market_caps = {}
         for ticker in self.initial_assets:
             self.market_caps[ticker] = [
                 self.prices[ticker][0] * self.shares_outstanding[ticker]
             ]
 
-        # Target number of assets in index (fixed k)
+        # Target number of index constituents
         target_index_size = int(self.index_size)
-        # Determine initial month constituents by top market cap after initialization
+        # Choose initial constituents by top market cap
         current_market_caps = {
             ticker: self.market_caps[ticker][-1] for ticker in all_existing_tickers
         }
@@ -192,10 +236,9 @@ class DynamicIndexSimulator:
         monthly_tickers = [set(self.current_assets)]
 
         for month in range(1, self.n_months):
-            # Generate price returns for ALL existing assets (universe)
+            # Sample returns for the current universe and update histories
             returns = self._generate_monthly_returns(all_existing_tickers)
 
-            # Update prices and market caps for all existing tickers
             for ticker in all_existing_tickers:
                 ret = returns.get(ticker, 0.0)
                 prev_price = self.prices[ticker][-1]
@@ -205,35 +248,57 @@ class DynamicIndexSimulator:
                 market_cap = new_price * self.shares_outstanding[ticker]
                 self.market_caps[ticker].append(market_cap)
 
-            # Randomly remove some assets from the universe based on removal_rate.
-            # Removals take effect from the next month (so current month's prices remain).
-            n_remove = int(len(all_existing_tickers) * self.removal_rate)
+            # Decide how many stocks to remove this month (Poisson draw).
+            # Removals are selected at random from the bottom fraction by market cap
+            # and take effect in the following month.
+            lam = max(0.0, self.removal_rate * len(all_existing_tickers))
+            n_remove = np.random.poisson(lam)
             if n_remove > 0:
+                # Candidates not already scheduled for removal
                 removable = [
                     t
                     for t in all_existing_tickers
                     if self.ticker_history[t]["removed_month"] is None
                 ]
-                n_remove = min(n_remove, len(removable))
-                if n_remove > 0:
-                    removed_samples = set(
-                        np.random.choice(list(removable), size=n_remove, replace=False)
+                if len(removable) > 0:
+                    # Obtain current market caps for candidates
+                    current_caps = {
+                        t: self.market_caps[t][-1]
+                        for t in removable
+                        if t in self.market_caps
+                    }
+                    # sort assets by market cap ascending and take bottom pct
+                    sorted_by_cap = sorted(current_caps.items(), key=lambda x: x[1])
+                    bottom_count = max(
+                        1, int(len(sorted_by_cap) * float(self.removal_bottom_pct))
                     )
-                    for rt in removed_samples:
-                        # mark removal to take effect next month
-                        self.ticker_history[rt]["removed_month"] = month + 1
-                        all_existing_tickers.remove(rt)
+                    bottom_candidates = [t for t, _ in sorted_by_cap[:bottom_count]]
 
-            # Add new assets occasionally based on addition_rate (fraction of current universe)
-            n_new_assets = max(0, int(len(all_existing_tickers) * self.addition_rate))
+                    if len(bottom_candidates) > 0:
+                        n_remove = min(n_remove, len(bottom_candidates))
+                        removed_samples = set(
+                            np.random.choice(
+                                list(bottom_candidates), size=n_remove, replace=False
+                            )
+                        )
+                        for rt in removed_samples:
+                            # mark removal to take effect next month
+                            self.ticker_history[rt]["removed_month"] = month + 1
+                            all_existing_tickers.remove(rt)
+
+            # Add new assets: draw a Poisson count and create that many new tickers.
+            n_new_assets = np.random.poisson(
+                max(0.0, self.addition_rate * len(all_existing_tickers))
+            )
             for asset_idx in range(n_new_assets):
                 sector = np.random.choice(self.sector_names)
                 ticker = self._generate_ticker(sector, asset_idx)
                 all_existing_tickers.add(ticker)
                 all_tickers_set.add(ticker)
 
-                self.shares_outstanding[ticker] = np.random.uniform(10, 500)
-                self.prices[ticker] = [100.0]  # Start new assets at 100
+                # new assets also draw from the skewed distribution
+                self.shares_outstanding[ticker] = self._sample_shares_outstanding()
+                self.prices[ticker] = [100.0]
                 self.market_caps[ticker] = [100.0 * self.shares_outstanding[ticker]]
 
                 self.asset_sectors[ticker] = sector
@@ -258,8 +323,8 @@ class DynamicIndexSimulator:
             self.current_assets = new_current_assets
             monthly_tickers.append(set(self.current_assets))
 
-        # Create DataFrame with aligned indices/columns
-        # Include ALL tickers ever created, with NaN for months they didn't exist
+        # Assemble a prices DataFrame covering all tickers.
+        # Months where a ticker did not yet exist (or was removed) are left as NaN.
         price_data = []
         for month in range(self.n_months):
             month_prices = {}
@@ -286,14 +351,13 @@ class DynamicIndexSimulator:
         return prices_df, sorted(list(all_tickers_set)), monthly_tickers
 
     def _generate_monthly_returns(self, tickers: Set[str]) -> Dict[str, float]:
-        """
-        Generate correlated monthly returns by sector.
+        """Draw correlated monthly returns by sector for the given tickers.
 
         Args:
-            tickers: Set of active tickers
+            tickers: Set of active tickers for which to draw returns.
 
         Returns:
-            Dictionary of ticker -> return
+            A dict mapping ticker -> monthly return (float).
         """
         returns = {}
 
@@ -305,18 +369,18 @@ class DynamicIndexSimulator:
                 sectors_assets[sector] = []
             sectors_assets[sector].append(ticker)
 
-        # Generate returns per sector
+        # For each sector, draw correlated shocks and apply a small drift
         for sector, sector_tickers in sectors_assets.items():
             n_assets = len(sector_tickers)
             vol = self.sector_volatility[sector]
 
-            # Generate correlated returns
+            # Build correlated shocks using Cholesky on sector-level correlation
             corr_matrix = self._get_sector_correlation_matrix(sector, n_assets)
             L = np.linalg.cholesky(corr_matrix)
             z = np.random.randn(n_assets)
             sector_returns = (L @ z) * vol
 
-            # Sector drift
+            # Add a small random sector drift
             sector_drift = np.random.uniform(-0.015, 0.015)
 
             for i, ticker in enumerate(sector_tickers):
@@ -327,19 +391,20 @@ class DynamicIndexSimulator:
     def generate_market_weights(
         self, prices_df: pd.DataFrame, monthly_tickers: List[Set[str]]
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Generate market cap weights for index constituents.
-        Includes all tickers ever created, with NaN for months they didn't exist.
+        """Generate market-cap time series and normalized index weights.
+
+        The output includes all tickers that ever existed; months when a ticker
+        was not active are represented with NaN.
 
         Args:
-            prices_df: DataFrame of prices
-            monthly_tickers: List of active tickers per month
+            prices_df: DataFrame of prices produced by `simulate_prices`.
+            monthly_tickers: List of sets containing index constituents each month.
 
         Returns:
-            weights_df: DataFrame of market cap weights (index: date, columns: tickers)
-            market_cap_df: DataFrame of market cap values
+            weights_df: DataFrame of market-cap weights (index: date, columns: tickers).
+            market_cap_df: DataFrame of raw market-cap values (same shape as weights_df).
         """
-        # Get all tickers from prices_df columns
+        # Build market-cap records for every date and ticker
         all_tickers = list(prices_df.columns)
         dates = prices_df.index
         market_cap_data = []
@@ -347,7 +412,7 @@ class DynamicIndexSimulator:
         for month, date in enumerate(dates):
             month_caps = {}
             for ticker in all_tickers:
-                # Check if ticker existed at this month
+                # Include only tickers active in this month
                 created_month = self.ticker_history[ticker]["created_month"]
                 removed_month = self.ticker_history[ticker]["removed_month"]
 
@@ -358,7 +423,7 @@ class DynamicIndexSimulator:
                     months_since_creation = month - created_month
                     market_cap = self.market_caps[ticker][months_since_creation]
                     month_caps[ticker] = market_cap
-                # else: leave as NaN
+                # otherwise leave as NaN
 
             market_cap_data.append(month_caps)
 
@@ -366,14 +431,21 @@ class DynamicIndexSimulator:
         market_cap_df.index.name = "date"
         market_cap_df = market_cap_df.sort_index(axis=1)
 
-        # Calculate weights (normalize by total market cap of active assets only)
+        # Convert market caps to weights by normalizing across active names
         weights_df = market_cap_df.div(market_cap_df.sum(axis=1), axis=0)
 
         return weights_df, market_cap_df
 
 
 def main():
-    """Main execution function."""
+    """Main execution function.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
 
     print("\n" + "=" * 70)
     print("SYNTHETIC MARKET DATA GENERATION")
@@ -417,13 +489,13 @@ def main():
 
     # Display configuration
     print("\nConfiguration:")
-    print(f"  - Sectors: {n_sectors}")
-    print(f"  - Assets per sector: {assets_per_sector}")
-    print(f"  - Total months: {n_months} ({n_months/12:.1f} years)")
-    print(f"  - Monthly removal rate: {removal_rate*100:.1f}%")
-    print(f"  - Monthly addition rate: {addition_rate*100:.1f}%")
-    print(f"  - Random seed: {random_seed}")
-    print(f"  - Output directory: {output_dir}")
+    print(f"Sectors: {n_sectors}")
+    print(f"Assets per sector: {assets_per_sector}")
+    print(f"Total months: {n_months} ({n_months/12:.1f} years)")
+    print(f"Monthly removal rate: {removal_rate*100:.1f}%")
+    print(f"Monthly addition rate: {addition_rate*100:.1f}%")
+    print(f"Random seed: {random_seed}")
+    print(f"Output directory: {output_dir}")
 
     # Generate data
     print("\nGenerating synthetic data...")
@@ -462,22 +534,6 @@ def main():
     print(f"Saved: {prices_path}")
     print(f"Saved: {weights_path}")
     print(f"Saved: {market_cap_path}")
-
-    # Show asset membership changes
-    print("\n" + "=" * 70)
-    print("ASSET MEMBERSHIP DYNAMICS")
-    print("=" * 70)
-
-    n_assets_per_month = prices_df.notna().sum(axis=1)
-    print("\nNumber of active assets per month (first 12 months):")
-    for month in range(min(12, len(prices_df))):
-        date = prices_df.index[month]
-        n_assets = n_assets_per_month.iloc[month]
-        print(f"  {date.strftime('%Y-%m')}: {n_assets} assets")
-
-    print("\n" + "=" * 70)
-    print("Data generation complete!")
-    print("=" * 70)
 
 
 if __name__ == "__main__":
