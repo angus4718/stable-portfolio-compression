@@ -1,0 +1,193 @@
+{
+  "description": "Configuration for synthetic market data generation",
+  
+  "simulation_parameters": {
+    "n_sectors": {
+      "value": 10,
+      "description": "Number of asset sectors to simulate",
+      "type": "integer",
+      "min": 1,
+      "max": 20
+    },
+    "assets_per_sector": {
+      "value": 20,
+      "description": "Initial number of assets per sector",
+      "type": "integer",
+      "min": 1,
+      "max": 100
+    },
+    "n_months": {
+      "value": 180,
+      "description": "Number of months to simulate (60 = 5 years)",
+      "type": "integer",
+      "min": 1,
+      "max": 600
+    },
+    "removal_rate": {
+      "value": 0.001,
+      "description": "Per-asset monthly removal rate used as the Poisson intensity. Expected number of removals per month = removal_rate * current_universe_size.",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "addition_rate": {
+      "value": 0.001,
+      "description": "Per-asset monthly addition rate used as the Poisson intensity. Expected number of additions per month = addition_rate * current_universe_size.",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "random_seed": {
+      "value": 42,
+      "description": "Random seed for reproducibility. Use different values for different simulations.",
+      "type": "integer",
+      "min": 0,
+      "max": 2147483647
+    }
+    ,
+    "index_size": {
+      "value": 50,
+      "description": "Fixed number of constituents in the market-cap weighted index (k).",
+      "type": "integer",
+      "min": 1
+    }
+  },
+
+  "market_cap_parameters": {
+    "description": "Parameters controlling the shares-outstanding (Pareto) sampler and removal eligibility",
+    "cap_pareto_alpha": {
+      "value": 2.0,
+      "description": "Pareto alpha for shares-outstanding sampler (lower -> heavier tail)",
+      "type": "float",
+      "min": 0.1,
+      "max": 10.0
+    },
+    "cap_scale": {
+      "value": 50.0,
+      "description": "Scale multiplier for shares-outstanding sampler",
+      "type": "float",
+      "min": 0.1,
+      "max": 1e6
+    },
+    "removal_bottom_pct": {
+      "value": 0.1,
+      "description": "Fraction of smallest names eligible for removal each month",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    }
+  ,
+    "max_stock_weight": {
+      "value": 0.1,
+      "description": "Optional cap on the maximum weight a single stock can have in the index (0-1). If null or absent, no cap is applied.",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+
+  "sector_volatility": {
+    "description": "Monthly volatility for each sector (annualized / sqrt(12) for monthly equiv.)",
+    "Technology": {
+      "value": 0.25,
+      "description": "Technology sector volatility",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Healthcare": {
+      "value": 0.20,
+      "description": "Healthcare sector volatility",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Finance": {
+      "value": 0.22,
+      "description": "Finance sector volatility",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Energy": {
+      "value": 0.30,
+      "description": "Energy sector volatility",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Consumer": {
+      "value": 0.18,
+      "description": "Consumer sector volatility",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+
+  "sector_correlation": {
+    "description": "Within-sector correlation coefficients (higher = more correlated)",
+    "Technology": {
+      "value": 0.60,
+      "description": "Within-sector correlation for Technology",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Healthcare": {
+      "value": 0.50,
+      "description": "Within-sector correlation for Healthcare",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Finance": {
+      "value": 0.70,
+      "description": "Within-sector correlation for Finance",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Energy": {
+      "value": 0.65,
+      "description": "Within-sector correlation for Energy",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "Consumer": {
+      "value": 0.55,
+      "description": "Within-sector correlation for Consumer",
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+
+  "sector_drift": {
+    "description": "Monthly sector drift distribution. Drawn per-month per-sector from Uniform(low, high) by default. You may specify global 'low' and 'high' here or add per-sector overrides with the same keys.",
+    "low": -0.015,
+    "high": 0.015
+  },
+
+  "output_directory": {
+    "value": "synthetic_data",
+    "description": "Directory where CSV files will be saved",
+    "type": "string"
+  },
+
+  "output_files": {
+    "prices": {
+      "filename": "prices_monthly.csv",
+      "description": "Monthly prices for all tickers (rows: dates, cols: tickers)"
+    },
+    "weights": {
+      "filename": "market_index_weights.csv",
+      "description": "Market cap weights for all tickers (normalized per month)"
+    },
+    "market_caps": {
+      "filename": "market_cap_values.csv",
+      "description": "Market cap values for all tickers in dollars"
+    }
+  }
+}
