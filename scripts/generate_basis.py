@@ -108,9 +108,8 @@ def select_basis(
 
 
 def main():
-
-    # Always load config from JSON file in the same directory as this script
-    config_path = Path(__file__).parent / "basis_config.json"
+    script_root = Path(__file__).parent
+    config_path = script_root / "basis_config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path, "r") as f:
@@ -186,8 +185,9 @@ def main():
         hub_branch_rep_alpha=hub_branch_rep_alpha,
     )
 
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir = script_root.parent / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / Path(output_path).name
     pd.Series(basis, name="ticker").to_csv(out_path, index=False)
     print(f"\nSaved basis (k={len(basis)}) to {out_path}")
     print(f"Selected basis tickers:\n{basis}")

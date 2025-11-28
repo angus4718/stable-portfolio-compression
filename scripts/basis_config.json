@@ -124,12 +124,12 @@
 
   "output": {
     "output_path": {
-      "value": "synthetic_data/basis_selected.csv",
+      "value": "outputs/basis_selected.csv",
       "description": "Path where the selected basis tickers will be saved",
       "type": "string"
     },
     "basis_path": {
-      "value": "synthetic_data/basis_selected.csv",
+      "value": "outputs/basis_selected.csv",
       "description": "Path to the basis CSV (used by local_ridge). Can override default location.",
       "type": "string"
     },
@@ -167,45 +167,5 @@
       "type": "string",
       "options": ["prim"]
     }
-  },
-
-  "notes": {
-    "workflow": [
-      "1. Load monthly price data from prices_path",
-      "2. Compute pairwise correlations using corr_method",
-      "3. Apply shrinkage/denoising (if specified)",
-      "4. Convert correlations to distances using chord distance: d = sqrt(2(1 - rho))",
-      "5. Build minimum spanning tree from distance matrix using Prim's algorithm",
-      "6. Select basis_size assets using max-spread (greedy k-center) on MST",
-      "7. Save selected basis tickers to output_path"
-    ],
-    "shrink_methods": {
-      "None": "Use raw sample correlation (no shrinkage)",
-      "lw": "Ledoit-Wolf shrinkage toward diagonal target (uses sklearn)",
-      "pca": "PCA-based denoising with top-k component retention"
-    },
-    "distance_metric": "Chord distance: d_ij = sqrt(2 * (1 - rho_ij))",
-    "basis_selection_algorithm": "Gonzalez greedy k-center algorithm on MST",
-    "typical_use_cases": [
-      {
-        "name": "Conservative (low denoising)",
-        "shrink_method": null,
-        "basis_size": 5,
-        "description": "Use raw correlations for detailed structure preservation"
-      },
-      {
-        "name": "Moderate (Ledoit-Wolf)",
-        "shrink_method": "lw",
-        "basis_size": 10,
-        "description": "Use Ledoit-Wolf shrinkage for balanced denoising"
-      },
-      {
-        "name": "Aggressive (PCA denoising)",
-        "shrink_method": "pca",
-        "pca_explained_variance": 0.75,
-        "basis_size": 15,
-        "description": "Use PCA to denoise, retaining 75% of variance"
-      }
-    ]
   }
 }
