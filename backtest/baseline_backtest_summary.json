@@ -1,0 +1,13 @@
+{
+  "x": 10,
+  "n_tail": 90,
+  "r2": 0.43505219441513976,
+  "n": 90,
+  "mean_diff": -0.0014526049131628502,
+  "std_diff": 0.017994558617359376,
+  "rmse": 0.01795317178359854,
+  "annualized_std": 0.06233497957008561,
+  "information_ratio_annualized": -0.27963848032316374,
+  "cumulative_tracking_error_end": 0.01795317178359854,
+  "avg_turnover_tail": 0.060159304885965666
+}
