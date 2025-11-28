@@ -33,7 +33,7 @@ class DistancesUtils:
         if not isinstance(price_df, pd.DataFrame):
             raise TypeError("price_df must be a pandas DataFrame.")
         price_df = price_df.sort_index()
-        return price_df.pct_change()
+        return price_df.pct_change(fill_method=None)
 
     @staticmethod
     def return_to_corr_df(
