@@ -1,16 +1,27 @@
 """
-Local Ridge regression using basis assets
+Local Ridge regression using basis assets.
 
-Reads config from scripts/basis_config.json and a basis list from
-synthetic_data/basis_selected.csv (column 'ticker'). Loads monthly prices,
-computes returns, and for each non-basis asset fits a Ridge regression of the
-asset's returns on selected basis returns (nearest by distance).
+This script reads configuration from `scripts/basis_config.json` and a selected
+basis list from `outputs/basis_selected.csv` (or an explicit path set in the
+config under `output.basis_path`). It loads monthly prices (default
+`synthetic_data/prices_monthly.csv`), computes simple returns, and performs
+expanding-window (monthly) Ridge regressions for each non-basis asset using
+nearest basis assets (by precomputed distance). The regressions record a
+time-series of fitted coefficients (per date) and produce reconstructed
+returns and per-asset fit diagnostics.
 
-Outputs:
-- synthetic_data/coefficients_ridge.csv : coefficients (rows = asset, cols = basis)
-- synthetic_data/recon_returns.csv      : predicted returns (same index as returns)
-- synthetic_data/regression_errors.csv  : RMSE per asset
+Key outputs (written to the `outputs/` directory by default):
+- `coefficients_ridge_timeseries.csv`: long-format coefficients (date, asset, basis, coef)
+- `coefficients_ridge.csv`: latest-date coefficient snapshot (asset x basis)
+- `recon_returns.csv`: predicted returns (index = dates, columns = assets)
+- `regression_errors.csv`: per-asset RMSE and diagnostics
+
+Notes:
+- Fits use an expanding window up to each month `t` and record coefficients at `t`.
+- Predicted returns at date `t` are computed when the model's feature row at `t`
+    (the selected neighbors) is fully observed.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,6 +41,7 @@ if str(_ROOT) not in sys.path:
 
 from spc.graph import DistancesUtils
 
+
 def load_config(config_path: Path) -> dict:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -47,12 +59,16 @@ def get_config_value(config: dict, *keys, default=None):
 
 
 def resolve_paths(config: dict, script_root: Path) -> Tuple[Path, Path]:
-    prices_path = Path(get_config_value(config, "input", "prices_path", default="synthetic_data/prices_monthly.csv"))
-    basis_override = get_config_value(config, "output", "basis_path", default=None)
-    if basis_override:
-        basis_path = Path(basis_override)
-    else:
-        basis_path = script_root.parent / "synthetic_data" / "basis_selected.csv"
+    prices_path = Path(
+        get_config_value(
+            config, "input", "prices_path", default="synthetic_data/prices_monthly.csv"
+        )
+    )
+    basis_path = Path(
+        get_config_value(
+            config, "output", "basis_path", default="outputs/basis_selected.csv"
+        )
+    )
     return prices_path, basis_path
 
 
@@ -76,11 +92,21 @@ def compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
 def compute_distance_df(prices: pd.DataFrame, config: dict) -> pd.DataFrame:
     return DistancesUtils.price_to_distance_df(
         prices,
-        min_periods=get_config_value(config, "distance_computation", "min_periods", default=1),
-        corr_method=get_config_value(config, "distance_computation", "corr_method", default="pearson"),
-        shrink_method=get_config_value(config, "distance_computation", "shrink_method", default=None),
-        pca_n_components=get_config_value(config, "pca_denoising", "pca_n_components", default=None),
-        pca_explained_variance=get_config_value(config, "pca_denoising", "pca_explained_variance", default=None),
+        min_periods=get_config_value(
+            config, "distance_computation", "min_periods", default=1
+        ),
+        corr_method=get_config_value(
+            config, "distance_computation", "corr_method", default="pearson"
+        ),
+        shrink_method=get_config_value(
+            config, "distance_computation", "shrink_method", default=None
+        ),
+        pca_n_components=get_config_value(
+            config, "pca_denoising", "pca_n_components", default=None
+        ),
+        pca_explained_variance=get_config_value(
+            config, "pca_denoising", "pca_explained_variance", default=None
+        ),
     )
 
 
@@ -125,7 +151,9 @@ def run_local_ridge_for_asset(
     cols = [asset] + neighbors
     df = returns[cols].dropna()
     if df.shape[0] < min_obs:
-        print(f"Skipping {asset}: insufficient observations after aligning with neighbors ({df.shape[0]})")
+        print(
+            f"Skipping {asset}: insufficient observations after aligning with neighbors ({df.shape[0]})"
+        )
         return None
 
     y = df[asset].values
@@ -143,7 +171,12 @@ def run_local_ridge_for_asset(
     y_pred = model.predict(X)
     recon = pd.Series(y_pred, index=df.index, name=asset)
     rmse = np.sqrt(np.mean((y - y_pred) ** 2))
-    error_row = {"asset": asset, "rmse": rmse, "n_obs": df.shape[0], "n_basis_used": len(neighbors)}
+    error_row = {
+        "asset": asset,
+        "rmse": rmse,
+        "n_obs": df.shape[0],
+        "n_basis_used": len(neighbors),
+    }
 
     return full_coefs, recon, error_row
 
@@ -155,51 +188,156 @@ def run_all_regressions(
     ridge_alpha: float,
     q_neighbors: Optional[int],
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Perform expanding-window Ridge regressions repeated monthly.
+
+    For each month `t` (index of `returns`) we fit a Ridge model for each
+    non-basis asset using all available data up to and including `t` (after
+    alignment and dropping NaNs). We then record the fitted coefficients at
+    date `t` and, where the feature row at `t` is available, compute a
+    predicted return for that asset at `t`.
+
+    Outputs:
+    - coef_long_df: long-format DataFrame with columns [date, asset, basis, coef]
+    - recon_df: DataFrame (index = dates, columns = assets) with predicted returns at each date
+    - errors_df: per-asset RMSE computed across dates where predictions were made
+    """
     non_basis = [c for c in returns.columns if c not in basis_list]
     if len(non_basis) == 0:
         print("No non-basis assets to regress. Exiting.")
         return (
-            pd.DataFrame(columns=basis_list),
+            pd.DataFrame(columns=["date", "asset", "basis", "coef"]),
             pd.DataFrame(index=returns.index),
             pd.DataFrame(columns=["rmse", "n_obs", "n_basis_used"]),
         )
 
-    coef_records: Dict[str, np.ndarray] = {}
-    recon_dfs: List[pd.Series] = []
-    errors: List[dict] = []
-
+    # Pre-compute neighbor lists (static nearest-basis selection)
+    neighbor_map: Dict[str, List[str]] = {}
     for asset in non_basis:
-        neighbors = select_neighbors_for_asset(asset, basis_list, dist_df, q_neighbors)
-        if not neighbors:
-            continue
-        result = run_local_ridge_for_asset(asset, returns, neighbors, basis_list, ridge_alpha)
-        if result is None:
-            continue
-        full_coefs, recon, error_row = result
-        coef_records[asset] = full_coefs
-        recon_dfs.append(recon)
-        errors.append(error_row)
-
-    if not coef_records:
-        print("No regressions were run (no sufficient data). Exiting.")
-        return (
-            pd.DataFrame(columns=basis_list),
-            pd.DataFrame(index=returns.index),
-            pd.DataFrame(columns=["rmse", "n_obs", "n_basis_used"]),
+        neighbor_map[asset] = select_neighbors_for_asset(
+            asset, basis_list, dist_df, q_neighbors
         )
 
-    coef_df = pd.DataFrame.from_dict(coef_records, orient="index", columns=basis_list)
-    recon_df = pd.concat(recon_dfs, axis=1).sort_index()
-    errors_df = pd.DataFrame(errors).set_index("asset").sort_values("rmse", ascending=False)
-    return coef_df, recon_df, errors_df
+    # Prepare outputs
+    coef_records: List[dict] = []
+    recon_df = pd.DataFrame(index=returns.index, columns=non_basis, dtype=float)
 
-def save_outputs(coef_df: pd.DataFrame, recon_df: pd.DataFrame, errors_df: pd.DataFrame, out_dir: Path) -> None:
+    min_obs = 10
+
+    # Iterate over expanding window end dates
+    for t in returns.index:
+        for asset in non_basis:
+            neighbors = neighbor_map.get(asset, [])
+            if not neighbors:
+                continue
+
+            cols = [asset] + neighbors
+            # Training data: all rows up to and including t
+            train = returns.loc[:t, cols].dropna()
+            if train.shape[0] < min_obs:
+                # insufficient data to fit at this date
+                continue
+
+            y = train[asset].values
+            X = train[neighbors].values
+            model = Ridge(alpha=ridge_alpha)
+            model.fit(X, y)
+
+            # Record coefficients for this date and asset (align to basis_list)
+            for b in basis_list:
+                coef_val = 0.0
+                if b in neighbors:
+                    try:
+                        pos = neighbors.index(b)
+                        coef_val = float(model.coef_[pos])
+                    except Exception:
+                        coef_val = 0.0
+                coef_records.append(
+                    {"date": t, "asset": asset, "basis": b, "coef": coef_val}
+                )
+
+            # Predict at date t if feature row available (no NaNs in neighbors at t)
+            x_t = returns.loc[t, neighbors]
+            if x_t.isnull().any():
+                continue
+            xvals = x_t.values.reshape(1, -1)
+            try:
+                y_pred = float(model.predict(xvals)[0])
+                recon_df.at[t, asset] = y_pred
+            except Exception:
+                # prediction failed; skip
+                continue
+
+    # Build coefficients long DataFrame
+    if coef_records:
+        coef_long_df = pd.DataFrame(coef_records)
+    else:
+        coef_long_df = pd.DataFrame(columns=["date", "asset", "basis", "coef"])
+
+    # Compute per-asset RMSE across dates where predictions exist
+    errors: List[dict] = []
+    for asset in non_basis:
+        preds = recon_df[asset].dropna()
+        if preds.empty:
+            continue
+        # align true returns
+        true_vals = returns.loc[preds.index, asset]
+        rmse = np.sqrt(np.mean((true_vals.values - preds.values) ** 2))
+        errors.append(
+            {
+                "asset": asset,
+                "rmse": float(rmse),
+                "n_obs": int(len(preds)),
+                "n_basis_used": len(neighbor_map.get(asset, [])),
+            }
+        )
+
+    if errors:
+        errors_df = (
+            pd.DataFrame(errors).set_index("asset").sort_values("rmse", ascending=False)
+        )
+    else:
+        errors_df = pd.DataFrame(columns=["rmse", "n_obs", "n_basis_used"])
+
+    return coef_long_df, recon_df, errors_df
+
+
+def save_outputs(
+    coef_df: pd.DataFrame,
+    recon_df: pd.DataFrame,
+    errors_df: pd.DataFrame,
+    out_dir: Path,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     coef_out = out_dir / "coefficients_ridge.csv"
     recon_out = out_dir / "recon_returns.csv"
     err_out = out_dir / "regression_errors.csv"
 
-    coef_df.to_csv(coef_out)
+    # coef_df may be in one of two shapes:
+    # - long-format DataFrame with columns [date, asset, basis, coef]
+    # - wide-format DataFrame (asset x basis)
+    if isinstance(coef_df, pd.DataFrame) and set(
+        ["date", "asset", "basis", "coef"]
+    ).issubset(set(coef_df.columns)):
+        # save long-format as CSV
+        coef_out_ts = out_dir / "coefficients_ridge_timeseries.csv"
+        coef_df.to_csv(coef_out_ts, index=False)
+        print(f"Saved time-series coefficients (long) to: {coef_out_ts}")
+        # Also save a pivoted wide-format snapshot for the last date if available
+        try:
+            last_date = coef_df["date"].max()
+            pivot = (
+                coef_df[coef_df["date"] == last_date]
+                .pivot(index="asset", columns="basis", values="coef")
+                .fillna(0.0)
+            )
+            pivot.to_csv(coef_out)
+            print(f"Saved latest-date coefficient snapshot to: {coef_out}")
+        except Exception:
+            # fallback: write an empty wide file
+            pd.DataFrame().to_csv(coef_out)
+    else:
+        coef_df.to_csv(coef_out)
     recon_df.to_csv(recon_out)
     errors_df.to_csv(err_out)
 
@@ -209,6 +347,7 @@ def save_outputs(coef_df: pd.DataFrame, recon_df: pd.DataFrame, errors_df: pd.Da
     if not errors_df.empty:
         print("Top 5 worst-fit assets:")
         print(errors_df.head(5))
+
 
 def main():
     script_root = Path(__file__).parent
@@ -233,7 +372,13 @@ def main():
         q_neighbors=q_neighbors,
     )
 
-    save_outputs(coef_df, recon_df, errors_df, out_dir=Path("synthetic_data"))
+    # Save regression outputs to `outputs/` (not to synthetic_data)
+    save_outputs(
+        coef_df,
+        recon_df,
+        errors_df,
+        out_dir=script_root.parent / "outputs",
+    )
 
 
 if __name__ == "__main__":
