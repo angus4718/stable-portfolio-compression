@@ -10,7 +10,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from spc.graph import DistancesUtils, MST
+from spc.graph import DistancesUtils, MST, UnionFind
 
 
 import logging
@@ -91,6 +91,145 @@ class TestDistancesUtils(unittest.TestCase):
         self.assertTrue(np.all(dist.values >= -1e-12))
         self.assertTrue(np.allclose(dist.values, dist.values.T, equal_nan=True))
 
+    def test_corr_to_distance_bounds(self):
+        # Distances should lie in [0, 2] for rho in [-1, 1]
+        corr = pd.DataFrame(
+            [[1.0, -1.0], [-1.0, 1.0]], index=["A", "B"], columns=["A", "B"]
+        )
+        dist = DistancesUtils.corr_to_distance_df(corr)
+        self.assertAlmostEqual(dist.loc["A", "B"], 2.0, places=8)
+        self.assertTrue(np.all(dist.values >= -1e-12))
+        self.assertTrue(np.all(dist.values <= 2.0 + 1e-12))
+
+    def test_return_to_corr_df_spearman(self):
+        # Spearman should reflect monotonic ranking relationships
+        r = pd.DataFrame(
+            {
+                "A": [1.0, 2.0, 3.0, 4.0],
+                "B": [10.0, 20.0, 30.0, 40.0],
+                "C": [4.0, 3.0, 2.0, 1.0],
+            }
+        )
+        corr = DistancesUtils.return_to_corr_df(
+            r, min_periods=1, corr_method="spearman"
+        )
+        # A and B are perfectly monotonic increasing -> spearman ~ 1
+        self.assertAlmostEqual(corr.loc["A", "B"], 1.0, places=8)
+        # A and C are perfectly inverse -> spearman ~ -1
+        self.assertAlmostEqual(corr.loc["A", "C"], -1.0, places=8)
+
+    def test_pca_denoise_handles_all_nan_column(self):
+        # Create returns where one column is entirely NaN; PCA denoiser should still return valid matrix
+        r = pd.DataFrame(np.random.randn(50, 3), columns=["A", "B", "C"])
+        r.iloc[:, 2] = np.nan
+        corr = DistancesUtils.pca_denoise_corr(r, n_components=1, min_periods=1)
+        self.assertEqual(corr.shape, (3, 3))
+        self.assertTrue(np.allclose(np.diag(corr.values), 1.0))
+        self.assertTrue(np.allclose(corr.values, corr.values.T, atol=1e-8))
+
+    def test_corr_to_distance_df_type_error(self):
+        with self.assertRaises(TypeError):
+            DistancesUtils.corr_to_distance_df([1, 2, 3])
+
+    def test_price_to_return_df_type_error(self):
+        with self.assertRaises(TypeError):
+            DistancesUtils.price_to_return_df([1, 2, 3])
+
+    def test_return_to_corr_df_invalid_method(self):
+        df = pd.DataFrame({"A": [1.0, 2.0], "B": [2.0, 3.0]})
+        with self.assertRaises(ValueError):
+            DistancesUtils.return_to_corr_df(df, corr_method="bad")
+
+    def test_pca_denoise_type_error(self):
+        with self.assertRaises(TypeError):
+            DistancesUtils.pca_denoise_corr([1, 2, 3])
+
+    def test_lw_shrink_corr_type_error(self):
+        with self.assertRaises(TypeError):
+            DistancesUtils.lw_shrink_corr([1, 2, 3])
+
+    def test_cov_to_corr_matrix_basic_and_zero_variance(self):
+        cov = np.array([[4.0, 1.0], [1.0, 9.0]])
+        cols = ["A", "B"]
+        corr_df = DistancesUtils.cov_to_corr_matrix(cov, cols)
+        self.assertEqual(corr_df.shape, (2, 2))
+        self.assertAlmostEqual(corr_df.loc["A", "A"], 1.0)
+        self.assertAlmostEqual(corr_df.loc["B", "B"], 1.0)
+        self.assertTrue(-1.0 <= corr_df.loc["A", "B"] <= 1.0)
+
+        cov2 = np.array([[0.0, 0.0], [0.0, 9.0]])
+        corr_df2 = DistancesUtils.cov_to_corr_matrix(cov2, cols)
+        # zero variance -> nan diagonal for that variable
+        self.assertTrue(np.isnan(corr_df2.loc["A", "A"]))
+        # off-diagonals involving A should be zero (constructed from zeros)
+        self.assertAlmostEqual(corr_df2.loc["A", "B"], 0.0)
+
+    def test_lw_shrink_and_price_to_distance_lw(self):
+        np.random.seed(0)
+        r = pd.DataFrame(np.random.randn(20, 3), columns=["X", "Y", "Z"])
+        # Introduce some NaNs
+        r.iloc[:5, 2] = np.nan
+        corr_lw = DistancesUtils.lw_shrink_corr(r)
+        self.assertEqual(corr_lw.shape, (3, 3))
+        self.assertTrue(
+            np.allclose(
+                np.diag(corr_lw.values)[~np.isnan(np.diag(corr_lw.values))], 1.0
+            )
+        )
+
+        prices = (1 + r.fillna(0)).cumprod()
+        dist = DistancesUtils.price_to_distance_df(prices, shrink_method="lw")
+        self.assertEqual(dist.shape, (3, 3))
+
+    def test_price_to_distance_invalid_shrink(self):
+        prices = pd.DataFrame({"A": [100.0, 101.0], "B": [50.0, 49.0]})
+        with self.assertRaises(ValueError):
+            DistancesUtils.price_to_distance_df(prices, shrink_method="invalid")
+
+    def test_corr_to_distance_clips_out_of_range(self):
+        corr = pd.DataFrame(
+            [[1.5, -2.0], [-2.0, 1.5]], index=["A", "B"], columns=["A", "B"]
+        )
+        dist = DistancesUtils.corr_to_distance_df(corr)
+        # values clipped to [-1,1] before transform: 1.5->1 -> distance 0; -2->-1 -> distance 2
+        self.assertAlmostEqual(dist.loc["A", "B"], 2.0)
+
+    def test_pca_explained_variance_branch(self):
+        # create data dominated by a single common factor so first PC explains most variance
+        rng = np.random.default_rng(0)
+        f = rng.normal(size=200)
+        X = np.vstack([2.0 * f + 0.01 * rng.normal(size=200) for _ in range(5)]).T
+        df = pd.DataFrame(X, columns=[f"c{i}" for i in range(5)])
+        corr_denoised = DistancesUtils.pca_denoise_corr(
+            df, explained_variance=0.5, min_periods=1
+        )
+        self.assertEqual(corr_denoised.shape, (5, 5))
+        self.assertTrue(np.allclose(np.diag(corr_denoised.values), 1.0))
+
+    def test_pca_n_components_bounded(self):
+        df = pd.DataFrame(np.random.randn(10, 3), columns=["a", "b", "c"])
+        # request more components than assets; should not crash and return 3x3
+        out = DistancesUtils.pca_denoise_corr(df, n_components=10, min_periods=1)
+        self.assertEqual(out.shape, (3, 3))
+
+    def test_lw_shrink_with_all_nan_column(self):
+        r = pd.DataFrame(np.random.randn(30, 3), columns=["X", "Y", "Z"])
+        r["Z"] = np.nan
+        corr_lw = DistancesUtils.lw_shrink_corr(r)
+        self.assertEqual(corr_lw.shape, (3, 3))
+        # column with all NaNs: ensure returned matrix is valid (finite/symmetric)
+        val = corr_lw.loc["Z", "Z"]
+        self.assertTrue(np.isfinite(val))
+        self.assertAlmostEqual(val, 1.0, places=8)
+
+    def test_price_to_distance_with_nan_column(self):
+        prices = pd.DataFrame(
+            {"A": [100.0, 101.0, 102.0], "B": [np.nan, np.nan, np.nan]}
+        )
+        dist = DistancesUtils.price_to_distance_df(prices)
+        # distances involving the all-NaN column should be NaN
+        self.assertTrue(np.isnan(dist.loc["A", "B"]) and np.isnan(dist.loc["B", "A"]))
+
 
 class TestMST(unittest.TestCase):
     def test_mst_prim_labels_and_symmetry(self):
@@ -113,12 +252,113 @@ class TestMST(unittest.TestCase):
                 found = [x for x, _ in adj[v]]
                 self.assertIn(u, found)
 
+    def test_mst_edge_count_and_total_weight(self):
+        # same matrix as above; expected MST edges = n-1 = 3 and total weight = 3.5
+        nodes = ["N1", "N2", "N3", "N4"]
+        mat = np.array(
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [1.0, 0.0, 1.5, 2.5],
+                [2.0, 1.5, 0.0, 1.0],
+                [3.0, 2.5, 1.0, 0.0],
+            ]
+        )
+        mst = MST(mat, nodes)
+        adj = mst.mst_adj
+
+        # Count unique edges and sum weights
+        edges = set()
+        total_weight = 0.0
+        for u in nodes:
+            for v, w in adj[u]:
+                a, b = tuple(sorted((u, v)))
+                edges.add((a, b))
+                total_weight += w
+        # each edge counted twice in adjacency, so divide
+        total_weight = total_weight / 2.0
+        self.assertEqual(len(edges), len(nodes) - 1)
+        self.assertAlmostEqual(total_weight, 3.5, places=8)
+
+    def test_mst_random_graph_properties(self):
+        # ensure MST on a random complete graph yields n-1 edges and symmetric adjacency
+        rng = np.random.default_rng(123)
+        n = 6
+        mat = rng.random((n, n))
+        mat = (mat + mat.T) / 2.0
+        np.fill_diagonal(mat, 0.0)
+        nodes = [f"n{i}" for i in range(n)]
+        mst = MST(mat, nodes)
+        adj = mst.mst_adj
+
+        edges = set()
+        for u in nodes:
+            for v, _ in adj[u]:
+                a, b = tuple(sorted((u, v)))
+                edges.add((a, b))
+        self.assertEqual(len(edges), n - 1)
+
+    def test_mst_rejects_non_square_and_empty_and_node_mismatch(self):
+        with self.assertRaises(ValueError):
+            MST([])
+
+        with self.assertRaises(ValueError):
+            MST([[0, 1, 2], [1, 0, 1]])
+
+        mat = [[0.0, 1.0], [1.0, 0.0]]
+        with self.assertRaises(ValueError):
+            MST(mat, nodes=["only_one"])
+
+    def test_mst_default_node_labels(self):
+        mat = [[0.0, 1.0], [1.0, 0.0]]
+        mst = MST(mat)
+        adj = mst.get_adj_dict()
+        self.assertEqual(set(adj.keys()), {0, 1})
+
+    def test_mst_ties_consistent_edge_count(self):
+        # complete graph with equal weights
+        n = 5
+        mat = np.ones((n, n)) - np.eye(n)
+        nodes = [f"v{i}" for i in range(n)]
+        mst = MST(mat, nodes)
+        adj = mst.get_adj_dict()
+        edges = set()
+        for u in nodes:
+            for v, _ in adj[u]:
+                a, b = tuple(sorted((u, v)))
+                edges.add((a, b))
+        self.assertEqual(len(edges), n - 1)
+
+
+class TestUnionFind(unittest.TestCase):
+    def test_unionfind_basic_operations(self):
+        uf = UnionFind(["a", "b", "c"])
+        self.assertEqual(uf.find("a"), "a")
+        self.assertEqual(uf.get_size("a"), 1)
+        merged = uf.union("a", "b")
+        self.assertTrue(merged)
+        self.assertEqual(uf.find("a"), uf.find("b"))
+        self.assertEqual(uf.get_size("a"), 2)
+        uf.union("b", "c")
+        self.assertEqual(uf.get_size("a"), 3)
+
+    def test_path_compression_behavior(self):
+        uf = UnionFind(["a", "b", "c", "d"])
+        uf.union("a", "b")
+        uf.union("b", "c")
+        # After unions, root should be common
+        root_a = uf.find("a")
+        root_c = uf.find("c")
+        self.assertEqual(root_a, root_c)
+        # parents for a and c should point to same root
+        self.assertEqual(uf.parents["a"], uf.parents["c"])
+
 
 if __name__ == "__main__":
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     suite.addTests(loader.loadTestsFromTestCase(TestDistancesUtils))
     suite.addTests(loader.loadTestsFromTestCase(TestMST))
+    suite.addTests(loader.loadTestsFromTestCase(TestUnionFind))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     if not result.wasSuccessful():
