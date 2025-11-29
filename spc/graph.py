@@ -196,7 +196,7 @@ class DistancesUtils:
 
 
 class UnionFind:
-    def __init__(self, nodes: list[str]):
+    def __init__(self, nodes: list[str]) -> None:
         self.parents = {node: node for node in nodes}
         self.sizes = {node: 1 for node in nodes}
 
@@ -234,7 +234,7 @@ class MST:
 
     def __init__(
         self, adj_matrix: list[list[float]], nodes: Optional[list[str]] = None
-    ):
+    ) -> None:
         n = len(adj_matrix)
         if n == 0 or any(len(row) != n for row in adj_matrix):
             raise ValueError("Adjacency matrix must be non-empty and square.")
@@ -246,9 +246,9 @@ class MST:
         if len(self.nodes) != n:
             raise ValueError("nodes length must match matrix size.")
         self.node_index = {node: i for i, node in enumerate(self.nodes)}
-        self.mst_adj = self._prim()
+        self.mst_adj = self._kruskal()
 
-    def _make_edges_heap(self):
+    def _make_edges_heap(self) -> list[tuple[float, int, int]]:
         edges_heap = []
         for i in range(self.n):
             for j in range(i + 1, self.n):
@@ -257,32 +257,20 @@ class MST:
         heapq.heapify(edges_heap)
         return edges_heap
 
-    def _prim(self):
-        in_mst = [False] * self.n
-        key = [float("inf")] * self.n
-        parent = [-1] * self.n
-
-        key[0] = 0.0
-        for _ in range(self.n):
-            u = min((i for i in range(self.n) if not in_mst[i]), key=lambda i: key[i])
-            in_mst[u] = True
-            row = self.adj_matrix[u]
-            for v in range(self.n):
-                if not in_mst[v]:
-                    w = row[v]
-                    if w < key[v]:
-                        key[v] = w
-                        parent[v] = u
-
-        # Build adjacency dict with node names
+    def _kruskal(self) -> dict[str, list[tuple[str, float]]]:
+        uf = UnionFind(self.nodes)
+        edges_heap = self._make_edges_heap()
         mst_adj_dict = {node: [] for node in self.nodes}
-        for v in range(1, self.n):
-            u = parent[v]
-            w = self.adj_matrix[u][v]
-            node_u = self.nodes[u]
-            node_v = self.nodes[v]
-            mst_adj_dict[node_u].append((node_v, w))
-            mst_adj_dict[node_v].append((node_u, w))
+        edges_used = 0
+
+        while edges_heap and edges_used < self.n - 1:
+            w, i, j = heapq.heappop(edges_heap)
+            node_u = self.nodes[i]
+            node_v = self.nodes[j]
+            if uf.union(node_u, node_v):
+                mst_adj_dict[node_u].append((node_v, w))
+                mst_adj_dict[node_v].append((node_u, w))
+                edges_used += 1
 
         return mst_adj_dict
 
