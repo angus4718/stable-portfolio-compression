@@ -17,7 +17,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from spc.graph import DistancesUtils, MST
-from spc.basis import BasisSelector
+from spc.portfolio_construction import BasisSelector
+from spc.utils import cfg_val
 
 
 def select_basis(
@@ -36,27 +37,15 @@ def select_basis(
     hub_branch_weight_gamma: float = 0.0,
     hub_branch_rep_alpha: float = 0.5,
 ):
-    prices = pd.read_csv(prices_path, index_col=0, parse_dates=True)
-    prices = prices.sort_index()
+    prices = pd.read_csv(prices_path, index_col=0, parse_dates=True).sort_index()
 
     # Load weights if provided and filter to assets with positive weights
     avg_weights = None
     if weights_path:
-        weights = pd.read_csv(weights_path, index_col=0, parse_dates=True)
-        weights = weights.sort_index()
-        # Find assets that have any positive weight across any month
-        assets_with_positive_weight = weights.columns[(weights > 0).any(axis=0)]
-        print(
-            f"Assets with positive weights: {len(assets_with_positive_weight)} out of {len(weights.columns)}"
-        )
-        # Compute average weight for each asset (across all months)
-        avg_weights = weights[assets_with_positive_weight].mean(axis=0)
-        print(
-            f"Average weights - min: {avg_weights.min():.4f}, max: {avg_weights.max():.4f}, mean: {avg_weights.mean():.4f}"
-        )
-        # Filter prices to only these assets
-        prices = prices[assets_with_positive_weight]
-        print(f"Filtered prices to {len(prices.columns)} assets")
+        weights = pd.read_csv(weights_path, index_col=0, parse_dates=True).sort_index()
+        positive_cols = weights.columns[(weights > 0).any(axis=0)]
+        avg_weights = weights[positive_cols].mean(axis=0)
+        prices = prices[positive_cols]
 
     # Compute distance matrix
     dist_df = DistancesUtils.price_to_distance_df(
@@ -77,33 +66,24 @@ def select_basis(
     selector = BasisSelector(mst_adj, nodes=list(mst_adj.keys()))
     k = int(min(basis_size, len(selector.nodes)))
 
-    # Route to the correct selection method
     method = basis_selection_method.lower()
     if method in ("max_spread", "max_spread_weighted"):
         if avg_weights is None:
             raise ValueError("Weighted selection requested but no weights provided.")
         weight_dict = avg_weights.to_dict()
-        # max_spread: alpha=1.0 (pure spread), max_spread_weighted: use configured alpha
         alpha = 1.0 if method == "max_spread" else weight_alpha
-        print(f"Using max-spread-weighted selection (alpha={alpha})")
-        basis = selector.select_max_spread_weighted(k, weight_dict, alpha=alpha)
-        return basis
-    elif method == "hub_branch":
-        print(
-            f"Using hub-and-branch selection (h={hub_branch_h}, alpha={hub_branch_alpha}, weight_gamma={hub_branch_weight_gamma}, rep_alpha={hub_branch_rep_alpha})"
-        )
-        basis = selector.select_hub_branch(
+        return selector.select_max_spread_weighted(k, weight_dict, alpha=alpha)
+    if method == "hub_branch":
+        return selector.select_hub_branch(
             k,
             h=hub_branch_h,
             alpha=hub_branch_alpha,
             weight_gamma=hub_branch_weight_gamma,
             rep_alpha=hub_branch_rep_alpha,
         )
-        return basis
-    else:
-        raise ValueError(
-            "basis_selection_method must be one of {'max_spread', 'max_spread_weighted', 'hub_branch'}"
-        )
+    raise ValueError(
+        "basis_selection_method must be one of {'max_spread', 'max_spread_weighted', 'hub_branch'}"
+    )
 
 
 def main():
@@ -114,52 +94,33 @@ def main():
         config = json.load(f)
     print(f"Loaded configuration from {config_path}")
 
-    # Extract config values
-    prices_path = config["input"]["prices_path"]["value"]
-    weights_path = config["input"].get("weights_path", {}).get("value")
-    basis_size = config["basis_selection"]["basis_size"]["value"]
-    weight_alpha = config["basis_selection"].get("weight_alpha", {}).get("value", 0.5)
-    basis_selection_method = (
-        config["basis_selection"]
-        .get("basis_selection_method", {})
-        .get("value", "max_spread")
+    prices_path = cfg_val(config, "input", "prices_path")
+    weights_path = cfg_val(config, "input", "weights_path", None)
+    basis_size = int(cfg_val(config, "basis_selection", "basis_size", 10))
+    weight_alpha = cfg_val(config, "basis_selection", "weight_alpha", 0.5)
+    basis_selection_method = cfg_val(
+        config, "basis_selection", "basis_selection_method", "max_spread"
     )
-    hub_branch_h = config["basis_selection"].get("hub_branch_h", {}).get("value", None)
-    hub_branch_alpha = (
-        config["basis_selection"].get("hub_branch_alpha", {}).get("value", 0.5)
+    hub_branch_h = cfg_val(config, "basis_selection", "hub_branch_h", None)
+    hub_branch_alpha = cfg_val(config, "basis_selection", "hub_branch_alpha", 0.5)
+    hub_branch_weight_gamma = cfg_val(
+        config, "basis_selection", "hub_branch_weight_gamma", 0.0
     )
-    hub_branch_weight_gamma = (
-        config["basis_selection"].get("hub_branch_weight_gamma", {}).get("value", 0.0)
+    hub_branch_rep_alpha = cfg_val(
+        config, "basis_selection", "hub_branch_rep_alpha", 0.5
     )
-    hub_branch_rep_alpha = (
-        config["basis_selection"].get("hub_branch_rep_alpha", {}).get("value", 0.5)
+    corr_method = cfg_val(config, "distance_computation", "corr_method", "pearson")
+    min_periods = int(cfg_val(config, "distance_computation", "min_periods", 1))
+    shrink_method = cfg_val(config, "distance_computation", "shrink_method", None)
+    pca_n_components = cfg_val(config, "pca_denoising", "pca_n_components", None)
+    pca_explained_variance = cfg_val(
+        config, "pca_denoising", "pca_explained_variance", None
     )
-    corr_method = config["distance_computation"]["corr_method"]["value"]
-    min_periods = config["distance_computation"]["min_periods"]["value"]
-    shrink_method = config["distance_computation"]["shrink_method"]["value"]
-    pca_n_components = config["pca_denoising"]["pca_n_components"]["value"]
-    pca_explained_variance = config["pca_denoising"]["pca_explained_variance"]["value"]
-    output_path = config["output"]["output_path"]["value"]
+    output_path = cfg_val(config, "output", "output_path", "outputs/basis_selected.csv")
 
-    print("\n" + "=" * 70)
-    print("BASIS ASSET SELECTION")
-    print("=" * 70)
-    print(f"\nConfiguration:")
-    print(f"  Prices file: {prices_path}")
-    print(f"  Weights file: {weights_path}")
-    print(f"  Basis size: {basis_size}")
-    print(f"  Basis selection method: {basis_selection_method}")
-    if basis_selection_method in ("max_spread_weighted", "hub_branch"):
-        print(
-            f"    - Weight alpha: {weight_alpha} (0=pure weight, 0.5=balanced, 1=pure spread)"
-        )
-    print(f"  Correlation method: {corr_method}")
-    print(f"  Min periods: {min_periods}")
-    print(f"  Shrink method: {shrink_method}")
-    if shrink_method == "pca":
-        print(f"    - PCA components: {pca_n_components}")
-        print(f"    - Explained variance: {pca_explained_variance}")
-    print(f"  Output path: {output_path}")
+    print(
+        f"Loaded config: prices={prices_path}, basis_k={basis_size}, method={basis_selection_method}"
+    )
 
     basis = select_basis(
         prices_path=prices_path,
@@ -184,7 +145,6 @@ def main():
     pd.Series(basis, name="ticker").to_csv(out_path, index=False)
     print(f"\nSaved basis (k={len(basis)}) to {out_path}")
     print(f"Selected basis tickers:\n{basis}")
-    print("=" * 70)
 
 
 if __name__ == "__main__":

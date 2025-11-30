@@ -12,6 +12,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from spc.synthetic_data import DynamicIndexSimulator
+from spc.utils import cfg_val
 
 
 def _load_config(cfg_path: Path) -> Dict[str, Any]:
@@ -27,14 +28,18 @@ def main() -> None:
 
     config = _load_config(config_path)
 
-    sim_params = config["simulation_parameters"]
-    n_sectors = sim_params["n_sectors"]["value"]
-    assets_per_sector = sim_params["assets_per_sector"]["value"]
-    n_months = sim_params["n_months"]["value"]
-    removal_rate = sim_params["removal_rate"]["value"]
-    addition_rate = sim_params["addition_rate"]["value"]
-    random_seed = sim_params["random_seed"]["value"]
-    index_size = sim_params.get("index_size", {}).get("value", None)
+    # simulation parameters (use shared cfg_val helper)
+    n_sectors = int(cfg_val(config, "simulation_parameters", "n_sectors", 10))
+    assets_per_sector = int(
+        cfg_val(config, "simulation_parameters", "assets_per_sector", 20)
+    )
+    n_months = int(cfg_val(config, "simulation_parameters", "n_months", 180))
+    removal_rate = float(cfg_val(config, "simulation_parameters", "removal_rate", 0.0))
+    addition_rate = float(
+        cfg_val(config, "simulation_parameters", "addition_rate", 0.0)
+    )
+    random_seed = int(cfg_val(config, "simulation_parameters", "random_seed", 0))
+    index_size = cfg_val(config, "simulation_parameters", "index_size", None)
 
     sector_volatility = {
         k: v["value"]
@@ -48,16 +53,29 @@ def main() -> None:
     }
     sector_drift_cfg = config.get("sector_drift", {})
 
-    output_dir = config["output_directory"]["value"]
+    output_dir = config.get("output_directory", {}).get("value")
     market_cap_params = config.get("market_cap_parameters", {})
 
     removal_bottom_pct = float(
-        market_cap_params.get("removal_bottom_pct", {}).get("value", 0.2)
+        cfg_val(
+            {"market_cap_parameters": market_cap_params},
+            "market_cap_parameters",
+            "removal_bottom_pct",
+            0.2,
+        )
     )
-    cap_pareto_alpha_cfg = market_cap_params.get("cap_pareto_alpha", {}).get(
-        "value", None
+    cap_pareto_alpha_cfg = cfg_val(
+        {"market_cap_parameters": market_cap_params},
+        "market_cap_parameters",
+        "cap_pareto_alpha",
+        None,
     )
-    cap_scale_cfg = market_cap_params.get("cap_scale", {}).get("value", None)
+    cap_scale_cfg = cfg_val(
+        {"market_cap_parameters": market_cap_params},
+        "market_cap_parameters",
+        "cap_scale",
+        None,
+    )
 
     simulator = DynamicIndexSimulator(
         n_sectors=n_sectors,
@@ -82,7 +100,12 @@ def main() -> None:
         prices_df, monthly_tickers
     )
 
-    max_stock_weight = market_cap_params.get("max_stock_weight", {}).get("value", None)
+    max_stock_weight = cfg_val(
+        {"market_cap_parameters": market_cap_params},
+        "market_cap_parameters",
+        "max_stock_weight",
+        None,
+    )
     if max_stock_weight is not None:
         weights_df = simulator.apply_max_stock_weight(
             weights_df, float(max_stock_weight)

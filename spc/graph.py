@@ -282,10 +282,6 @@ class UnionFind:
 
 
 class MST:
-    """
-    Assume dense graph where every node is connected to every other node.
-    """
-
     def __init__(
         self, adj_matrix: list[list[float]], nodes: Optional[list[str]] = None
     ) -> None:
