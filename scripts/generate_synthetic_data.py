@@ -95,10 +95,8 @@ def main() -> None:
         cap_scale=(float(cap_scale_cfg) if cap_scale_cfg is not None else None),
     )
 
-    prices_df, all_tickers, monthly_tickers = simulator.simulate_prices()
-    weights_df, market_cap_df = simulator.generate_market_weights(
-        prices_df, monthly_tickers
-    )
+    prices_df, _, _ = simulator.simulate_prices()
+    weights_df, market_cap_df = simulator.generate_market_weights(prices_df)
 
     max_stock_weight = cfg_val(
         {"market_cap_parameters": market_cap_params},

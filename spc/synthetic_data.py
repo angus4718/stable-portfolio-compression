@@ -285,22 +285,22 @@ class DynamicIndexSimulator:
                 "sector": sector,
             }
 
-        def simulate_prices(self) -> Tuple[pd.DataFrame, List[str], List[Set[str]]]:
-            """Simulate monthly prices and dynamic index membership.
+    def simulate_prices(self) -> Tuple[pd.DataFrame, List[str], List[Set[str]]]:
+        """Simulate monthly prices and dynamic index membership.
 
-            The simulation advances month-by-month, generating idiosyncratic
-            sector-correlated returns, applying removals and additions, and
-            updating prices and market-cap history for every ticker.
+        The simulation advances month-by-month, generating idiosyncratic
+        sector-correlated returns, applying removals and additions, and
+        updating prices and market-cap history for every ticker.
 
-            Returns:
-                    tuple[pandas.DataFrame, list[str], list[set[str]]]:
-                            - prices_df: DataFrame of shape (n_months, n_tickers) with
-                                NaN for dates where a ticker was not active.
-                            - all_tickers_sorted: Sorted list of all tickers that ever
-                                existed during the simulation.
-                            - monthly_tickers: List (length n_months) of sets with the
-                                tickers that composed the target index each month.
-            """
+        Returns:
+                tuple[pandas.DataFrame, list[str], list[set[str]]]:
+                        - prices_df: DataFrame of shape (n_months, n_tickers) with
+                            NaN for dates where a ticker was not active.
+                        - all_tickers_sorted: Sorted list of all tickers that ever
+                            existed during the simulation.
+                        - monthly_tickers: List (length n_months) of sets with the
+                            tickers that composed the target index each month.
+        """
 
         # Generate monthly dates (first-of-month)
         start_date = datetime(2025, 12, 1) - pd.DateOffset(months=self.n_months - 1)
