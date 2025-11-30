@@ -306,7 +306,14 @@ class Backtester:
 
         diffs_tail = tail_df["diff"].fillna(0.0).astype(float)
         running_rmse = self.running_rmse(diffs_tail)
-        cum_te_end = float(running_rmse.iloc[-1]) if len(running_rmse) > 0 else None
+
+        diffs_all = diff.dropna().astype(float)
+        if len(diffs_all) > 0:
+            tracking_error_rmse = float(np.sqrt(np.mean(diffs_all.values**2)))
+            tracking_error_annualized = float(tracking_error_rmse * np.sqrt(12.0))
+        else:
+            tracking_error_rmse = None
+            tracking_error_annualized = None
 
         turnover_ts = None
         avg_turnover_tail = None
@@ -324,7 +331,8 @@ class Backtester:
         summary.update(
             {
                 "information_ratio_annualized": info_ratio,
-                "cumulative_tracking_error_end": cum_te_end,
+                "tracking_error_rmse": tracking_error_rmse,
+                "tracking_error_annualized": tracking_error_annualized,
                 "avg_turnover_tail": avg_turnover_tail,
             }
         )
