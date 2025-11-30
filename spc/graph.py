@@ -5,6 +5,8 @@ import pandas as pd
 from typing import Optional
 from sklearn.decomposition import PCA
 from sklearn.covariance import LedoitWolf
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Any, Callable
+from collections import deque
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -276,3 +278,142 @@ class MST:
 
     def get_adj_dict(self) -> dict[str, list[tuple[str, float]]]:
         return self.mst_adj
+
+
+class TreeUtils:
+    """
+    Utilities for working with a weighted tree (MST).
+    Expects adjacency as dict: node -> list[(neighbor, weight)] with undirected edges.
+    """
+
+    @staticmethod
+    def nodes_from_adj(adj: Dict[Any, List[Tuple[Any, float]]]) -> List[Any]:
+        return list(adj.keys())
+
+    @staticmethod
+    def all_pairs_tree_distance(
+        adj: Dict[Any, List[Tuple[Any, float]]], nodes: Optional[Sequence[Any]] = None
+    ) -> Dict[Any, Dict[Any, float]]:
+        """
+        Compute all-pairs distances on a tree via repeated BFS/DFS.
+
+        Returns nested dict dist[u][v] with path lengths (sum of edge weights).
+        """
+        if nodes is None:
+            nodes = list(adj.keys())
+
+        def bfs_from(src):
+            d = {src: 0.0}
+            q = deque([src])
+            while q:
+                u = q.popleft()
+                for v, w in adj[u]:
+                    if v not in d:
+                        d[v] = d[u] + float(w)
+                        q.append(v)
+            return d
+
+        return {s: {v: bfs_from(s).get(v, np.inf) for v in nodes} for s in nodes}
+
+    @staticmethod
+    def path_length_between(
+        adj: Dict[Any, List[Tuple[Any, float]]], src: Any, dst: Any
+    ) -> float:
+        """
+        Compute path length between two nodes on a tree via BFS.
+        """
+        if src == dst:
+            return 0.0
+        q = deque([src])
+        dist = {src: 0.0}
+        while q:
+            u = q.popleft()
+            for v, w in adj[u]:
+                if v not in dist:
+                    dist[v] = dist[u] + float(w)
+                    if v == dst:
+                        return dist[v]
+                    q.append(v)
+        return np.inf
+
+    @staticmethod
+    def argmax_dict(d: Dict[Any, float]) -> Any:
+        if not d:
+            return None
+        return max(d, key=d.get)
+
+    @staticmethod
+    def remove_nodes_and_components(
+        adj: Dict[Any, List[Tuple[Any, float]]], remove: Set[Any]
+    ) -> List[Set[Any]]:
+        """
+        Remove 'remove' nodes from the tree, return connected components of the remaining graph.
+        """
+        remaining = set(adj.keys()) - remove
+        seen = set()
+        comps = []
+        for s in remaining:
+            if s in seen:
+                continue
+            comp = set()
+            q = deque([s])
+            seen.add(s)
+            while q:
+                u = q.popleft()
+                comp.add(u)
+                for v, _ in adj[u]:
+                    if v in remaining and v not in seen:
+                        seen.add(v)
+                        q.append(v)
+            comps.append(comp)
+        return comps
+
+    @staticmethod
+    def degrees(adj: Dict[Any, List[Tuple[Any, float]]]) -> Dict[Any, int]:
+        return {u: len(neigh) for u, neigh in adj.items()}
+
+    @staticmethod
+    def path_betweenness_counts(
+        adj: Dict[Any, List[Tuple[Any, float]]],
+    ) -> Dict[Any, int]:
+        """
+        For a tree, the number of simple paths passing through a node equals:
+        sum over all unordered pairs of components created by removing that node.
+        If removing u yields component sizes s1, s2, ..., sd (d = degree(u)),
+        then betw(u) = sum_{i<j} s_i * s_j = ( (sum s_i)^2 - sum s_i^2 ) / 2.
+        Here sum s_i = n - 1 (excluding u).
+        """
+        nodes = list(adj.keys())
+        n = len(nodes)
+        if n == 0:
+            return {}
+
+        # Root at arbitrary node and compute subtree sizes via DFS
+        root = nodes[0]
+        parent = {root: None}
+        order = [root]
+        stack = [root]
+        while stack:
+            u = stack.pop()
+            for v, _ in adj[u]:
+                if v == parent.get(u):
+                    continue
+                parent[v] = u
+                stack.append(v)
+                order.append(v)
+
+        subtree = {u: 1 for u in nodes}
+        for u in reversed(order):
+            for v, _ in adj[u]:
+                if parent.get(v) == u:
+                    subtree[u] += subtree[v]
+
+        betw = {}
+        total = n - 1
+        for u in nodes:
+            comp_sizes = [subtree[v] for v, _ in adj[u] if parent.get(v) == u]
+            if parent.get(u) is not None:
+                comp_sizes.append(total - subtree[u])
+            sum_sq = sum(s * s for s in comp_sizes)
+            betw[u] = (total * total - sum_sq) // 2
+        return betw
