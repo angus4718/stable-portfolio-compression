@@ -10,7 +10,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from spc.graph import DistancesUtils, MST, UnionFind
+from spc.graph import DistancesUtils, MST, UnionFind, TreeUtils
 
 
 import logging
@@ -230,6 +230,59 @@ class TestDistancesUtils(unittest.TestCase):
         # distances involving the all-NaN column should be NaN
         self.assertTrue(np.isnan(dist.loc["A", "B"]) and np.isnan(dist.loc["B", "A"]))
 
+    def test_windowed_price_to_distance_expanding_and_rolling(self):
+        # expanding window vs rolling tail behavior
+        idx = pd.date_range("2020-01-01", periods=6, freq="M")
+        prices = pd.DataFrame(
+            {"A": [100, 101, 102, 103, 104, 105], "B": [50, 51, 52, 53, 54, 55]},
+            index=idx,
+        )
+        end = pd.Timestamp("2020-04-30")
+
+        dist_exp = DistancesUtils.windowed_price_to_distance(prices, end, window=None)
+        dist_roll = DistancesUtils.windowed_price_to_distance(prices, end, window=3)
+
+        prices_exp = prices.loc[:end]
+        prices_roll = prices_exp.tail(3)
+
+        # compare shapes and symmetry
+        self.assertEqual(
+            dist_exp.shape, DistancesUtils.price_to_distance_df(prices_exp).shape
+        )
+        self.assertEqual(
+            dist_roll.shape, DistancesUtils.price_to_distance_df(prices_roll).shape
+        )
+        # values should match manual pipeline
+        np.testing.assert_allclose(
+            dist_exp.values,
+            DistancesUtils.price_to_distance_df(prices_exp).values,
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            dist_roll.values,
+            DistancesUtils.price_to_distance_df(prices_roll).values,
+            equal_nan=True,
+        )
+
+    def test_price_to_return_df_non_datetime_index(self):
+        prices = pd.DataFrame(
+            {"X": [10.0, 11.0, 12.1], "Y": [5.0, 5.5, 6.0]}, index=[0, 1, 2]
+        )
+        returns = DistancesUtils.price_to_return_df(prices)
+        # first row is NaN even for non-datetime index
+        self.assertTrue(returns.iloc[0].isna().all())
+        self.assertAlmostEqual(returns.iloc[1]["X"], 0.1, places=6)
+
+    def test_cov_to_corr_matrix_negative_diag_handling(self):
+        # tiny negative diagonal should be treated as non-positive and result in NaN diagonal
+        cov = np.array([[-1e-8, 0.0], [0.0, 4.0]])
+        cols = ["A", "B"]
+        corr_df = DistancesUtils.cov_to_corr_matrix(cov, cols)
+        # first diagonal was non-positive -> should be NaN
+        self.assertTrue(np.isnan(corr_df.loc["A", "A"]))
+        # other diagonal should be 1.0
+        self.assertAlmostEqual(corr_df.loc["B", "B"], 1.0, places=8)
+
 
 class TestMST(unittest.TestCase):
     def test_mst_prim_labels_and_symmetry(self):
@@ -328,6 +381,19 @@ class TestMST(unittest.TestCase):
                 edges.add((a, b))
         self.assertEqual(len(edges), n - 1)
 
+    def test_mst_handles_negative_weights(self):
+        # negative weights should not break Kruskal's algorithm
+        mat = np.array([[0.0, -1.0], [-1.0, 0.0]])
+        mst = MST(mat)
+        adj = mst.get_adj_dict()
+        # single edge connecting the two nodes
+        edges = set()
+        for u in adj:
+            for v, _ in adj[u]:
+                a, b = tuple(sorted((u, v)))
+                edges.add((a, b))
+        self.assertEqual(len(edges), 1)
+
 
 class TestUnionFind(unittest.TestCase):
     def test_unionfind_basic_operations(self):
@@ -352,6 +418,105 @@ class TestUnionFind(unittest.TestCase):
         # parents for a and c should point to same root
         self.assertEqual(uf.parents["a"], uf.parents["c"])
 
+    def test_unionfind_union_idempotent_returns_false(self):
+        uf = UnionFind(["x", "y"])
+        self.assertTrue(uf.union("x", "y"))
+        # second union between same components returns False
+        self.assertFalse(uf.union("x", "y"))
+
+    def test_unionfind_path_compression_sets_parents_to_root(self):
+        uf = UnionFind(["p", "q", "r", "s"])
+        uf.union("p", "q")
+        uf.union("q", "r")
+        root = uf.find("p")
+        # force_find on others
+        uf.find("q")
+        uf.find("r")
+        for n in ("p", "q", "r"):
+            self.assertEqual(uf.parents[n], root)
+
+
+class TestTreeUtils(unittest.TestCase):
+    def test_nodes_from_adj_and_degrees(self):
+        adj = {"A": [("B", 1.0)], "B": [("A", 1.0), ("C", 2.0)], "C": [("B", 2.0)]}
+        nodes = TreeUtils.nodes_from_adj(adj)
+        self.assertEqual(set(nodes), set(adj.keys()))
+        degs = TreeUtils.degrees(adj)
+        self.assertEqual(degs["A"], 1)
+        self.assertEqual(degs["B"], 2)
+
+    def test_all_pairs_distance_and_path_length(self):
+        # simple chain A-B-C with weights 1,1
+        adj = {"A": [("B", 1.0)], "B": [("A", 1.0), ("C", 1.0)], "C": [("B", 1.0)]}
+        dist = TreeUtils.all_pairs_tree_distance(adj)
+        self.assertAlmostEqual(dist["A"]["C"], 2.0)
+        self.assertAlmostEqual(dist["C"]["A"], 2.0)
+
+        # path length between
+        pl = TreeUtils.path_length_between(adj, "A", "C")
+        self.assertAlmostEqual(pl, 2.0)
+
+    def test_remove_nodes_and_components(self):
+        adj = {
+            "A": [("B", 1.0)],
+            "B": [("A", 1.0), ("C", 1.0), ("D", 1.0)],
+            "C": [("B", 1.0)],
+            "D": [("B", 1.0)],
+        }
+        comps = TreeUtils.remove_nodes_and_components(adj, {"B"})
+        # removing B isolates A, C, and D (no direct edges between them),
+        # so we expect three components {A}, {C}, {D}
+        comps_sets = [set(c) for c in comps]
+        self.assertIn({"A"}, comps_sets)
+        self.assertIn({"C"}, comps_sets)
+        self.assertIn({"D"}, comps_sets)
+
+    def test_path_betweenness_counts_properties(self):
+        # chain of 4 nodes: A-B-C-D
+        adj = {
+            "A": [("B", 1.0)],
+            "B": [("A", 1.0), ("C", 1.0)],
+            "C": [("B", 1.0), ("D", 1.0)],
+            "D": [("C", 1.0)],
+        }
+        betw = TreeUtils.path_betweenness_counts(adj)
+        # middle nodes B and C should have larger betweenness than leaves
+        self.assertTrue(betw["B"] > betw["A"])
+        self.assertTrue(betw["C"] > betw["D"])
+
+    def test_star_graph_degrees(self):
+        # star graph with center 'C' connected to 4 leaves
+        adj = {"C": [(f"L{i}", 1.0) for i in range(4)]}
+        for i in range(4):
+            adj[f"L{i}"] = [("C", 1.0)]
+        nodes = TreeUtils.nodes_from_adj(adj)
+        degs = TreeUtils.degrees(adj)
+        self.assertIn("C", nodes)
+        self.assertEqual(degs["C"], 4)
+        for i in range(4):
+            self.assertEqual(degs[f"L{i}"], 1)
+
+    def test_path_betweenness_small_trees(self):
+        # single-node tree
+        adj1 = {"A": []}
+        betw1 = TreeUtils.path_betweenness_counts(adj1)
+        # no paths exist in single-node tree
+        self.assertEqual(betw1.get("A", 0), 0)
+
+        # two-node tree
+        adj2 = {"A": [("B", 1.0)], "B": [("A", 1.0)]}
+        betw2 = TreeUtils.path_betweenness_counts(adj2)
+        # leaves should have zero betweenness
+        self.assertEqual(betw2["A"], 0)
+        self.assertEqual(betw2["B"], 0)
+
+    def test_remove_nodes_and_components_remove_nonexistent_noop(self):
+        adj = {"A": [("B", 1.0)], "B": [("A", 1.0), ("C", 1.0)], "C": [("B", 1.0)]}
+        comps_before = TreeUtils.remove_nodes_and_components(adj, set())
+        comps_after = TreeUtils.remove_nodes_and_components(adj, {"Z"})
+        # removing a non-existent node should be a no-op and return same component structure
+        self.assertEqual(len(comps_before), len(comps_after))
+
 
 if __name__ == "__main__":
     loader = unittest.TestLoader()
@@ -359,6 +524,7 @@ if __name__ == "__main__":
     suite.addTests(loader.loadTestsFromTestCase(TestDistancesUtils))
     suite.addTests(loader.loadTestsFromTestCase(TestMST))
     suite.addTests(loader.loadTestsFromTestCase(TestUnionFind))
+    suite.addTests(loader.loadTestsFromTestCase(TestTreeUtils))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     if not result.wasSuccessful():
