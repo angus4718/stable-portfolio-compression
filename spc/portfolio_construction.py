@@ -15,42 +15,6 @@ if str(_ROOT) not in sys.path:
 from spc.graph import DistancesUtils
 
 
-# Shared small helpers to reduce duplication between runners
-def load_basis_list_from_path(basis_path: Path) -> List[str]:
-    df = pd.read_csv(basis_path)
-    if "ticker" in df.columns:
-        return df["ticker"].astype(str).tolist()
-    return df.iloc[:, 0].astype(str).tolist()
-
-
-def resolve_output_and_input_paths(config: Dict):
-    outputs_dir = _ROOT / "outputs"
-    outputs_dir.mkdir(parents=True, exist_ok=True)
-
-    basis_cfg_val = (
-        config.get("output", {}).get("basis_path", {}).get("value", "outputs/basis_selected.csv")
-    )
-    basis_path = Path(basis_cfg_val)
-    if not basis_path.exists():
-        alt = outputs_dir / basis_path.name
-        if alt.exists():
-            basis_path = alt
-
-    coeffs_path = outputs_dir / "coefficients_ridge.csv"
-    coeffs_ts_path = outputs_dir / "coefficients_ridge_timeseries.csv"
-
-    weights_cfg_val = (
-        config.get("input", {}).get("weights_path", {}).get("value", "synthetic_data/market_index_weights.csv")
-    )
-    weights_path = Path(weights_cfg_val)
-    if not weights_path.exists():
-        altw = _ROOT / weights_path
-        if altw.exists():
-            weights_path = altw
-
-    return outputs_dir, basis_path, coeffs_path, coeffs_ts_path, weights_path
-
-
 class LocalRidgeRunner:
     """Local neighbor-based Ridge regression pipeline.
 
@@ -74,7 +38,10 @@ class LocalRidgeRunner:
         return prices.sort_index()
 
     def _load_basis_list(self, basis_path: Path) -> List[str]:
-        return load_basis_list_from_path(basis_path)
+        df = pd.read_csv(basis_path)
+        if "ticker" in df.columns:
+            return df["ticker"].astype(str).tolist()
+        return df.iloc[:, 0].astype(str).tolist()
 
     def _compute_returns(self, prices: pd.DataFrame) -> pd.DataFrame:
         return DistancesUtils.price_to_return_df(prices).dropna(how="all")
@@ -280,7 +247,6 @@ class LocalRidgeRunner:
         errors_df.to_csv(out_dir / "regression_errors.csv")
 
     def run(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        config = self.config
         prices_path = Path(
             self._C("input", "prices_path", default="synthetic_data/prices_monthly.csv")
         )
@@ -322,10 +288,41 @@ class WeightMapper:
         self.config = config
 
     def _load_basis_list(self, basis_path: Path) -> list[str]:
-        return load_basis_list_from_path(basis_path)
+        basis_df = pd.read_csv(basis_path)
+        if "ticker" in basis_df.columns:
+            return basis_df["ticker"].astype(str).tolist()
+        return basis_df.iloc[:, 0].astype(str).tolist()
 
     def _resolve_paths(self):
-        return resolve_output_and_input_paths(self.config)
+        outputs_dir = _ROOT / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        basis_cfg_val = (
+            self.config.get("output", {})
+            .get("basis_path", {})
+            .get("value", "outputs/basis_selected.csv")
+        )
+        basis_path = Path(basis_cfg_val)
+        if not basis_path.exists():
+            alt = outputs_dir / basis_path.name
+            if alt.exists():
+                basis_path = alt
+
+        coeffs_path = outputs_dir / "coefficients_ridge.csv"
+        coeffs_ts_path = outputs_dir / "coefficients_ridge_timeseries.csv"
+
+        weights_cfg_val = (
+            self.config.get("input", {})
+            .get("weights_path", {})
+            .get("value", "synthetic_data/market_index_weights.csv")
+        )
+        weights_path = Path(weights_cfg_val)
+        if not weights_path.exists():
+            altw = _ROOT / weights_path
+            if altw.exists():
+                weights_path = altw
+
+        return outputs_dir, basis_path, coeffs_path, coeffs_ts_path, weights_path
 
     def _compute_from_timeseries(
         self, coeffs_ts: pd.DataFrame, w_spx: pd.DataFrame, basis_list: list[str]
