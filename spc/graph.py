@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class DistancesUtils:
+    # Simple in-memory cache for windowed computations keyed by window parameters and end date.
+    _window_cache: Dict[tuple, pd.DataFrame] = {}
+
     @staticmethod
     def corr_to_distance_df(corr_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -25,6 +28,55 @@ class DistancesUtils:
         dist = np.sqrt(2.0 * (1.0 - corr_vals))
         np.fill_diagonal(dist.values, 0.0)
         return dist.astype(float)
+
+    @staticmethod
+    def windowed_price_to_distance(
+        prices: pd.DataFrame,
+        end_date,
+        window: Optional[int] = None,
+        min_periods: int = 1,
+        corr_method: str = "pearson",
+        shrink_method: Optional[str] = None,
+        pca_n_components: Optional[int] = None,
+        pca_explained_variance: Optional[float] = None,
+    ) -> pd.DataFrame:
+        """
+        Compute a distance DataFrame using only price data up to `end_date`.
+
+        - `window` (int) : if provided, use the last `window` rows up to `end_date` (rolling);
+                           otherwise use all rows up to `end_date` (expanding).
+        - Results are cached per-run keyed by (end_date, window, shrink/PCA params, columns).
+        """
+        end_ts = pd.Timestamp(end_date)
+        key = (
+            end_ts.isoformat(),
+            int(window) if window is not None else None,
+            int(min_periods),
+            corr_method,
+            shrink_method,
+            pca_n_components,
+            pca_explained_variance,
+            tuple(prices.columns.tolist()),
+        )
+        if key in DistancesUtils._window_cache:
+            return DistancesUtils._window_cache[key]
+
+        if window is None:
+            prices_t = prices.loc[:end_ts]
+        else:
+            prices_t = prices.loc[:end_ts].tail(window)
+
+        dist = DistancesUtils.price_to_distance_df(
+            prices_t,
+            min_periods=min_periods,
+            corr_method=corr_method,
+            shrink_method=shrink_method,
+            pca_n_components=pca_n_components,
+            pca_explained_variance=pca_explained_variance,
+        )
+
+        DistancesUtils._window_cache[key] = dist
+        return dist
 
     @staticmethod
     def price_to_return_df(price_df: pd.DataFrame) -> pd.DataFrame:

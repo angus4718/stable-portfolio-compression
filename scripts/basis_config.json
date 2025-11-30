@@ -75,12 +75,6 @@
       "options": ["max_spread", "max_spread_weighted", "hub_branch"]
     },
 
-    "use_weighted_selection": {
-      "value": true,
-      "description": "Whether to incorporate stock weights (market importance) into selection (used by weighted methods)",
-      "type": "boolean"
-    },
-
     "weight_alpha": {
       "value": 0.5,
       "description": "Trade-off parameter for weighted selection: balances spread vs weight importance (used by max_spread_weighted)",
