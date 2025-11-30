@@ -42,10 +42,11 @@ if str(_ROOT) not in sys.path:
 from spc.graph import DistancesUtils
 
 
-def load_config(config_path: Path) -> dict:
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-    with config_path.open("r") as f:
+def load_config() -> dict:
+    cfg_path = _ROOT / "scripts" / "basis_config.json"
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Config file not found: {cfg_path}")
+    with cfg_path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -56,20 +57,6 @@ def get_config_value(config: dict, *keys, default=None):
     if isinstance(cur, dict) and "value" in cur:
         return cur["value"]
     return default
-
-
-def resolve_paths(config: dict, script_root: Path) -> Tuple[Path, Path]:
-    prices_path = Path(
-        get_config_value(
-            config, "input", "prices_path", default="synthetic_data/prices_monthly.csv"
-        )
-    )
-    basis_path = Path(
-        get_config_value(
-            config, "output", "basis_path", default="outputs/basis_selected.csv"
-        )
-    )
-    return prices_path, basis_path
 
 
 def load_prices(prices_path: Path) -> pd.DataFrame:
@@ -313,31 +300,17 @@ def save_outputs(
     recon_out = out_dir / "recon_returns.csv"
     err_out = out_dir / "regression_errors.csv"
 
-    # coef_df may be in one of two shapes:
-    # - long-format DataFrame with columns [date, asset, basis, coef]
-    # - wide-format DataFrame (asset x basis)
-    if isinstance(coef_df, pd.DataFrame) and set(
-        ["date", "asset", "basis", "coef"]
-    ).issubset(set(coef_df.columns)):
-        # save long-format as CSV
-        coef_out_ts = out_dir / "coefficients_ridge_timeseries.csv"
-        coef_df.to_csv(coef_out_ts, index=False)
-        print(f"Saved time-series coefficients (long) to: {coef_out_ts}")
-        # Also save a pivoted wide-format snapshot for the last date if available
-        try:
-            last_date = coef_df["date"].max()
-            pivot = (
-                coef_df[coef_df["date"] == last_date]
-                .pivot(index="asset", columns="basis", values="coef")
-                .fillna(0.0)
-            )
-            pivot.to_csv(coef_out)
-            print(f"Saved latest-date coefficient snapshot to: {coef_out}")
-        except Exception:
-            # fallback: write an empty wide file
-            pd.DataFrame().to_csv(coef_out)
-    else:
-        coef_df.to_csv(coef_out)
+    coef_out_ts = out_dir / "coefficients_ridge_timeseries.csv"
+    coef_df.to_csv(coef_out_ts, index=False)
+    print(f"Saved time-series coefficients (long) to: {coef_out_ts}")
+    last_date = coef_df["date"].max()
+    pivot = (
+        coef_df[coef_df["date"] == last_date]
+        .pivot(index="asset", columns="basis", values="coef")
+        .fillna(0.0)
+    )
+    pivot.to_csv(coef_out)
+    print(f"Saved latest-date coefficient snapshot to: {coef_out}")
     recon_df.to_csv(recon_out)
     errors_df.to_csv(err_out)
 
@@ -350,10 +323,18 @@ def save_outputs(
 
 
 def main():
-    script_root = Path(__file__).parent
-    config = load_config(script_root / "basis_config.json")
+    config = load_config()
 
-    prices_path, basis_path = resolve_paths(config, script_root)
+    prices_path = Path(
+        get_config_value(
+            config, "input", "prices_path", default="synthetic_data/prices_monthly.csv"
+        )
+    )
+    basis_path = Path(
+        get_config_value(
+            config, "output", "basis_path", default="outputs/basis_selected.csv"
+        )
+    )
     ridge_alpha = get_config_value(config, "regression", "ridge_alpha", default=1.0)
     q_neighbors = get_config_value(config, "regression", "q_neighbors", default=None)
 
@@ -372,12 +353,12 @@ def main():
         q_neighbors=q_neighbors,
     )
 
-    # Save regression outputs to `outputs/` (not to synthetic_data)
+    # Save regression outputs to `outputs/` (repo-level outputs dir)
     save_outputs(
         coef_df,
         recon_df,
         errors_df,
-        out_dir=script_root.parent / "outputs",
+        out_dir=_ROOT / "outputs",
     )
 
 

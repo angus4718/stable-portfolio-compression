@@ -20,8 +20,7 @@ def _load_config(cfg_path: Path) -> Dict[str, Any]:
 
 
 def main() -> None:
-    script_root = Path(__file__).parent
-    config_path = script_root / "synthetic_data_config.json"
+    config_path = _ROOT / "scripts" / "synthetic_data_config.json"
     if not config_path.exists():
         print(f"ERROR: Configuration file not found at {config_path}")
         return
@@ -90,6 +89,8 @@ def main() -> None:
         )
 
     out_path = Path(output_dir)
+    if not out_path.is_absolute():
+        out_path = _ROOT / out_path
     out_path.mkdir(parents=True, exist_ok=True)
 
     prices_filename = config["output_files"]["prices"]["filename"]

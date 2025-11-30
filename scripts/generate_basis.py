@@ -30,7 +30,6 @@ def select_basis(
     corr_method: str = "pearson",
     min_periods: int = 1,
     basis_selection_method: str = "max_spread",
-    use_weighted_selection: bool = True,
     weight_alpha: float = 0.5,
     hub_branch_h: int = None,
     hub_branch_alpha: float = 0.5,
@@ -108,11 +107,10 @@ def select_basis(
 
 
 def main():
-    script_root = Path(__file__).parent
-    config_path = script_root / "basis_config.json"
+    config_path = _ROOT / "scripts" / "basis_config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
     print(f"Loaded configuration from {config_path}")
 
@@ -120,9 +118,6 @@ def main():
     prices_path = config["input"]["prices_path"]["value"]
     weights_path = config["input"].get("weights_path", {}).get("value")
     basis_size = config["basis_selection"]["basis_size"]["value"]
-    use_weighted = (
-        config["basis_selection"].get("use_weighted_selection", {}).get("value", True)
-    )
     weight_alpha = config["basis_selection"].get("weight_alpha", {}).get("value", 0.5)
     basis_selection_method = (
         config["basis_selection"]
@@ -154,8 +149,7 @@ def main():
     print(f"  Weights file: {weights_path}")
     print(f"  Basis size: {basis_size}")
     print(f"  Basis selection method: {basis_selection_method}")
-    print(f"  Use weighted selection: {use_weighted}")
-    if use_weighted:
+    if basis_selection_method in ("max_spread_weighted", "hub_branch"):
         print(
             f"    - Weight alpha: {weight_alpha} (0=pure weight, 0.5=balanced, 1=pure spread)"
         )
@@ -177,7 +171,6 @@ def main():
         corr_method=corr_method,
         min_periods=min_periods,
         basis_selection_method=basis_selection_method,
-        use_weighted_selection=use_weighted,
         weight_alpha=weight_alpha,
         hub_branch_h=hub_branch_h,
         hub_branch_alpha=hub_branch_alpha,
@@ -185,7 +178,7 @@ def main():
         hub_branch_rep_alpha=hub_branch_rep_alpha,
     )
 
-    out_dir = script_root.parent / "outputs"
+    out_dir = _ROOT / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / Path(output_path).name
     pd.Series(basis, name="ticker").to_csv(out_path, index=False)

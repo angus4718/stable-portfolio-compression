@@ -9,20 +9,25 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
 
+import sys
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from spc.graph import DistancesUtils
 
 
 class Backtester:
     """Base backtester utilities used by specific backtest implementations."""
 
-    def __init__(self, root: Path):
-        self.root = Path(root)
+    def __init__(self) -> None:
         self.prices: Optional[pd.DataFrame] = None
         self.w_spx: Optional[pd.DataFrame] = None
 
     def load_prices_and_weights(self):
-        prices_path = self.root.parent / "synthetic_data" / "prices_monthly.csv"
-        weights_path = self.root.parent / "synthetic_data" / "market_index_weights.csv"
+        prices_path = _ROOT / "synthetic_data" / "prices_monthly.csv"
+        weights_path = _ROOT / "synthetic_data" / "market_index_weights.csv"
         for p in (prices_path, weights_path):
             if not p.exists():
                 raise FileNotFoundError(f"Required input not found: {p}")
@@ -136,7 +141,7 @@ class Backtester:
         idx_returns: pd.Series,
         rep_returns: pd.Series,
         rep_weights: pd.DataFrame,
-        x_percent: float,
+        tail_percent: float,
         timeseries_name: str,
         summary_name: str,
         plot_name: str,
@@ -162,7 +167,7 @@ class Backtester:
         dates = diff.dropna().index
         if len(dates) == 0:
             raise RuntimeError("No overlapping return observations to evaluate.")
-        n_tail = max(1, int(len(dates) * (float(x_percent) / 100.0)))
+        n_tail = max(1, int(len(dates) * (float(tail_percent) / 100.0)))
         tail_idx = dates[-n_tail:]
 
         tail_idx_ret = idx_returns.loc[tail_idx]
@@ -217,7 +222,7 @@ class Backtester:
             }
         )
 
-        out_dir = self.root.parent / "backtest"
+        out_dir = _ROOT / "backtest"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         timeseries_out = out_dir / timeseries_name
@@ -243,23 +248,25 @@ class StrategyBacktester(Backtester):
     """Backtester that uses regression coefficients (time-series or snapshot)
     to map index weights to basis weights and then replicate."""
 
-    def __init__(self, root: Path):
-        super().__init__(root)
-        self.outputs_dir = self.root.parent / "outputs"
+    def __init__(self):
+        super().__init__()
+        # Do not store filesystem roots on the instance. `load_inputs` accepts
+        # a `root` parameter and will read from the appropriate paths.
         self.basis_list: Optional[List[str]] = None
         self.coeffs_ts: Optional[pd.DataFrame] = None
         self.coeffs_snap: Optional[pd.DataFrame] = None
 
     def load_inputs(self):
         self.load_prices_and_weights()
-        basis_path = self.outputs_dir / "basis_selected.csv"
+        outputs_dir = _ROOT / "outputs"
+        basis_path = outputs_dir / "basis_selected.csv"
         if not basis_path.exists():
             raise FileNotFoundError(f"Basis list not found: {basis_path}")
         basis_df = pd.read_csv(basis_path)
         self.basis_list = basis_df["ticker"].astype(str).tolist()
 
-        coeffs_ts_path = self.outputs_dir / "coefficients_ridge_timeseries.csv"
-        coeffs_snap_path = self.outputs_dir / "coefficients_ridge.csv"
+        coeffs_ts_path = outputs_dir / "coefficients_ridge_timeseries.csv"
+        coeffs_snap_path = outputs_dir / "coefficients_ridge.csv"
         if coeffs_ts_path.exists():
             self.coeffs_ts = pd.read_csv(
                 coeffs_ts_path, parse_dates=["date"]
@@ -351,7 +358,7 @@ class StrategyBacktester(Backtester):
         basis_weights = self.w_spx.reindex(columns=universe).fillna(0.0).dot(A)
         return basis_weights
 
-    def run(self, x_percent: float = 20.0):
+    def run(self, tail_percent: float = 20.0):
         self.load_inputs()
         basis_weights = self.compute_basis_weights_time_series()
 
@@ -368,14 +375,14 @@ class StrategyBacktester(Backtester):
             idx_returns=idx_returns,
             rep_returns=rep_returns,
             rep_weights=basis_weights,
-            x_percent=x_percent,
+            tail_percent=tail_percent,
             timeseries_name="backtest_timeseries.csv",
             summary_name="backtest_summary.json",
             plot_name="backtest_plot.png",
-            extra_meta={"x_percent": x_percent},
+            extra_meta={"tail_percent": tail_percent},
         )
 
-        out_dir = self.root.parent / "backtest"
+        out_dir = _ROOT / "backtest"
         print("Backtest summary (tail):")
         for k, v in summary.items():
             print(f" - {k}: {v}")
@@ -386,26 +393,26 @@ class StrategyBacktester(Backtester):
 class BaselineBacktester(Backtester):
     """Baseline backtester that replicates using top-X index stocks."""
 
-    def __init__(self, root: Path):
-        super().__init__(root)
-        self.outputs_dir = self.root.parent / "outputs"
+    def __init__(self):
+        super().__init__()
         self.basis_df = None
 
     def load_inputs(self):
         self.load_prices_and_weights()
-        basis_path = self.outputs_dir / "basis_selected.csv"
+        outputs_dir = _ROOT / "outputs"
+        basis_path = outputs_dir / "basis_selected.csv"
         if not basis_path.exists():
             raise FileNotFoundError(f"Basis list not found: {basis_path}")
         self.basis_df = pd.read_csv(basis_path)
 
-    def compute_topx_weights_time_series(self, x: int) -> pd.DataFrame:
+    def compute_topx_weights_time_series(self, top_n: int) -> pd.DataFrame:
         universe = [str(c) for c in self.w_spx.columns.tolist()]
         w_aligned = self.w_spx.reindex(columns=universe).fillna(0.0)
 
         rows = []
         for dt in w_aligned.index:
             w_row = w_aligned.loc[dt].astype(float)
-            top = w_row.nlargest(x)
+            top = w_row.nlargest(top_n)
             total = top.sum()
             if total <= 0:
                 nonzero = w_row > 0
@@ -425,9 +432,9 @@ class BaselineBacktester(Backtester):
         rep_weights.columns = universe
         return rep_weights
 
-    def run(self, x: int, x_percent: float = 20.0):
+    def run(self, top_n: int, tail_percent: float = 20.0):
         self.load_inputs()
-        rep_weights = self.compute_topx_weights_time_series(x)
+        rep_weights = self.compute_topx_weights_time_series(top_n)
 
         returns = self.compute_returns(self.prices)
         w_prev = self.w_spx.shift(1).reindex(index=returns.index).fillna(0.0)
@@ -441,14 +448,14 @@ class BaselineBacktester(Backtester):
             idx_returns=idx_returns,
             rep_returns=rep_returns,
             rep_weights=rep_weights,
-            x_percent=x_percent,
+            tail_percent=tail_percent,
             timeseries_name="baseline_backtest_timeseries.csv",
             summary_name="baseline_backtest_summary.json",
             plot_name="baseline_backtest_plot.png",
-            extra_meta={"x": int(x)},
+            extra_meta={"top_n": int(top_n)},
         )
 
-        out_dir = self.root.parent / "backtest"
+        out_dir = _ROOT / "backtest"
         print("Baseline backtest summary:")
         for k, v in summary.items():
             print(f" - {k}: {v}")

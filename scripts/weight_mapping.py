@@ -24,10 +24,15 @@ from pathlib import Path
 import json
 import pandas as pd
 import numpy as np
+import sys
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
-def load_config(root: Path) -> dict:
-    cfg_path = root / "basis_config.json"
+def load_config() -> dict:
+    cfg_path = _ROOT / "scripts" / "basis_config.json"
     if not cfg_path.exists():
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     with open(cfg_path, "r", encoding="utf-8") as f:
@@ -35,10 +40,9 @@ def load_config(root: Path) -> dict:
 
 
 def main():
-    root = Path(__file__).parent
-    cfg = load_config(root)
+    cfg = load_config()
 
-    outputs_dir = root.parent / "outputs"
+    outputs_dir = _ROOT / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     basis_cfg_val = (
@@ -181,8 +185,7 @@ def main():
 
         basis_weights = w_spx_aligned.dot(A)
 
-    # Persist basis-weight outputs to `outputs/`
-    out_dir = root.parent / "outputs"
+    out_dir = _ROOT / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Validate that basis weights sum to 1 per date (row)
