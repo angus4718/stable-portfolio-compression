@@ -1,13 +1,14 @@
 {
-  "x_percent": 50.0,
+  "tail_percent": 50.0,
   "n_tail": 90,
-  "r2": 0.5072216337997704,
+  "r2": 0.6091474241960235,
   "n": 90,
-  "mean_diff": -0.0018106735918814389,
-  "std_diff": 0.0167626218065353,
-  "rmse": 0.016767288620619922,
-  "annualized_std": 0.05806742527396227,
-  "information_ratio_annualized": -0.3741871281542812,
-  "cumulative_tracking_error_end": 0.016767288620619925,
-  "avg_turnover_tail": 0.030798707383817844
+  "mean_diff": 0.0031346467484534876,
+  "std_diff": 0.015368452044223074,
+  "rmse": 0.015600993645117649,
+  "annualized_std": 0.053237879548560275,
+  "information_ratio_annualized": 0.7065600903043311,
+  "tracking_error_rmse": 0.016798890870002806,
+  "tracking_error_annualized": 0.058193064995299595,
+  "avg_turnover_tail": 0.026261501525679264
 }
