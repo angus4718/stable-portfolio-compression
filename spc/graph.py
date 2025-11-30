@@ -1,3 +1,16 @@
+"""Utilities for computing asset distances and tree topologies.
+
+This module provides helpers to convert price/return series into correlation
+and distance matrices (including Ledoit-Wolf shrinkage and PCA denoising),
+and algorithms to build and analyze minimum spanning trees (MST).
+
+Main components:
+- DistancesUtils: price/return -> correlation -> distance pipeline.
+- UnionFind: disjoint-set data structure for Kruskal's MST.
+- MST: build minimum spanning tree from an adjacency matrix.
+- TreeUtils: helpers for tree distances, components, degrees, and betweenness.
+"""
+
 import heapq
 import logging
 import numpy as np
@@ -5,7 +18,7 @@ import pandas as pd
 from typing import Optional
 from sklearn.decomposition import PCA
 from sklearn.covariance import LedoitWolf
-from typing import Dict, List, Optional, Sequence, Set, Tuple, Any, Callable
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Any
 from collections import deque
 
 # Module logger
@@ -13,14 +26,28 @@ logger = logging.getLogger(__name__)
 
 
 class DistancesUtils:
-    # Simple in-memory cache for windowed computations keyed by window parameters and end date.
-    _window_cache: Dict[tuple, pd.DataFrame] = {}
+    """Utilities to convert prices and returns into correlation and distance matrices.
+
+    Provides static helpers for computing period returns, pairwise-overlap
+    correlation matrices, and optional denoising using Ledoit-Wolf shrinkage
+    or PCA-based reconstruction. Also exposes a mapping from correlation to
+    metric distances usable for graph algorithms (e.g., MST construction).
+    """
 
     @staticmethod
     def corr_to_distance_df(corr_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Map correlations in [-1, 1] to distances d = sqrt(2(1 - rho)).
-        Preserves index/columns and sets diagonal to 0.
+        """Convert a correlation DataFrame into a distance DataFrame.
+
+        The transformation used is d = sqrt(2 * (1 - rho)), which maps
+        correlations in [-1, 1] to non-negative distances. The returned
+        DataFrame preserves the input index/columns and sets the diagonal
+        to 0.0.
+
+        Args:
+            corr_df (pandas.DataFrame): Square correlation matrix.
+
+        Returns:
+            pandas.DataFrame: Pairwise distance matrix.
         """
         if not isinstance(corr_df, pd.DataFrame):
             raise TypeError("corr_df must be a pandas DataFrame.")
@@ -40,26 +67,28 @@ class DistancesUtils:
         pca_n_components: Optional[int] = None,
         pca_explained_variance: Optional[float] = None,
     ) -> pd.DataFrame:
-        """
-        Compute a distance DataFrame using only price data up to `end_date`.
+        """Compute distances using price history ending at ``end_date``.
 
-        - `window` (int) : if provided, use the last `window` rows up to `end_date` (rolling);
-                           otherwise use all rows up to `end_date` (expanding).
-        - Results are cached per-run keyed by (end_date, window, shrink/PCA params, columns).
+        This helper slices the supplied ``prices`` DataFrame to the requested
+        window (rolling or expanding) up to ``end_date``, invokes the price->
+        distance pipeline, and caches results keyed by the window parameters
+        and column ordering for reuse.
+
+        Args:
+            prices (pandas.DataFrame): Price level time series indexed by date.
+            end_date (str | pandas.Timestamp): Inclusive end date for the window.
+            window (int | None): Number of most recent rows to use; if ``None``
+                an expanding window from the start is used.
+            min_periods (int): Minimum observations required when computing correlations.
+            corr_method (str): Correlation method, e.g. 'pearson' or 'spearman'.
+            shrink_method (str | None): Optional denoising method: 'lw' or 'pca'.
+            pca_n_components (int | None): Number of PCA components if using PCA.
+            pca_explained_variance (float | None): Explained variance threshold if using PCA.
+
+        Returns:
+            pandas.DataFrame: Pairwise distance matrix for the requested window.
         """
         end_ts = pd.Timestamp(end_date)
-        key = (
-            end_ts.isoformat(),
-            int(window) if window is not None else None,
-            int(min_periods),
-            corr_method,
-            shrink_method,
-            pca_n_components,
-            pca_explained_variance,
-            tuple(prices.columns.tolist()),
-        )
-        if key in DistancesUtils._window_cache:
-            return DistancesUtils._window_cache[key]
 
         if window is None:
             prices_t = prices.loc[:end_ts]
@@ -75,14 +104,17 @@ class DistancesUtils:
             pca_explained_variance=pca_explained_variance,
         )
 
-        DistancesUtils._window_cache[key] = dist
         return dist
 
     @staticmethod
     def price_to_return_df(price_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Convert price levels to simple returns: r_t = P_t / P_{t-1} - 1
-        The first row becomes NaN due to differencing.
+        """Convert price levels to simple (period-over-period) returns.
+
+        Args:
+            price_df (pandas.DataFrame): Price levels with a DatetimeIndex.
+
+        Returns:
+            pandas.DataFrame: Period returns; the first row will be NaN.
         """
         if not isinstance(price_df, pd.DataFrame):
             raise TypeError("price_df must be a pandas DataFrame.")
@@ -93,10 +125,19 @@ class DistancesUtils:
     def return_to_corr_df(
         return_df: pd.DataFrame, min_periods: int = 1, corr_method: str = "pearson"
     ) -> pd.DataFrame:
-        """
-        Compute the correlation matrix across columns using pairwise overlapping samples.
-        corr_method: 'pearson' (linear) or 'spearman' (rank).
-        min_periods: minimum number of observations required per pair to compute correlation.
+        """Compute a pairwise correlation matrix handling NaNs via pairwise overlap.
+
+        Uses ``DataFrame.corr`` with the provided ``corr_method`` and retains
+        diagonal entries for columns that have at least ``min_periods``
+        non-missing observations.
+
+        Args:
+            return_df (pandas.DataFrame): Returns DataFrame (columns = assets).
+            min_periods (int): Minimum overlapping observations to compute a pair.
+            corr_method (str): 'pearson' or 'spearman'.
+
+        Returns:
+            pandas.DataFrame: Correlation matrix with shape (n_assets, n_assets).
         """
         if not isinstance(return_df, pd.DataFrame):
             raise TypeError("return_df must be a pandas DataFrame.")
@@ -112,6 +153,15 @@ class DistancesUtils:
 
     @staticmethod
     def cov_to_corr_matrix(cov_matrix: np.ndarray, cols: list[str]):
+        """Convert a covariance matrix to a correlation DataFrame.
+
+        Args:
+            cov_matrix (numpy.ndarray): Square covariance matrix.
+            cols (list[str]): Column/row labels for the resulting DataFrame.
+
+        Returns:
+            pandas.DataFrame: Correlation matrix with labels ``cols``.
+        """
         # Convert to correlation
         diag = np.diag(cov_matrix).copy()
         diag = np.where(diag <= 0.0, 0.0, diag)
@@ -133,18 +183,25 @@ class DistancesUtils:
         explained_variance: Optional[float] = None,
         min_periods: int = 1,
     ) -> pd.DataFrame:
-        """
-        Denoise correlation via PCA (principal component truncation).
+        """Denoise a correlation matrix by truncating PCA components.
 
-        - If `n_components` supplied, use that many components.
-        - Else if `explained_variance` supplied (0-1), choose smallest k explaining that fraction.
-        - Else default to min(10, N-1).
+        The method computes a correlation matrix (pairwise overlap), performs
+        PCA on that matrix and reconstructs it using a truncated number of
+        components selected by either ``n_components`` or
+        ``explained_variance``.
 
-        Process:
-        1. Compute correlation matrix (handles NaN via pairwise overlap).
-        2. Apply PCA to correlation matrix.
-        3. Reconstruct correlation using truncated components.
-        4. Clip to valid range [-1, 1] and set diagonal to 1.
+        Args:
+            return_df (pandas.DataFrame): Returns DataFrame used to build the
+                input correlation matrix.
+            n_components (int | None): If provided, the exact number of PCA
+                components to keep.
+            explained_variance (float | None): If provided (0-1), choose the
+                smallest k explaining at least this fraction of variance.
+            min_periods (int): Minimum overlapping observations for computing
+                the base correlation.
+
+        Returns:
+            pandas.DataFrame: Denoised correlation matrix (labels preserved).
         """
         if not isinstance(return_df, pd.DataFrame):
             raise TypeError("return_df must be a pandas DataFrame.")
@@ -194,8 +251,14 @@ class DistancesUtils:
 
     @staticmethod
     def lw_shrink_corr(return_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Estimate a shrunk covariance using Ledoit-Wolf and convert to a correlation DataFrame.
+        """Estimate a shrunk covariance (Ledoit-Wolf) and convert to correlation.
+
+        Args:
+            return_df (pandas.DataFrame): Returns DataFrame used to fit Ledoit-
+                Wolf on filled data.
+
+        Returns:
+            pandas.DataFrame: Correlation matrix estimated from the shrunk covariance.
         """
         if not isinstance(return_df, pd.DataFrame):
             raise TypeError("return_df must be a pandas DataFrame.")
@@ -224,8 +287,21 @@ class DistancesUtils:
         pca_n_components: Optional[int] = None,
         pca_explained_variance: Optional[float] = None,
     ) -> pd.DataFrame:
-        """
-        Pipeline: prices -> simple returns -> correlation -> optional denoising -> distance.
+        """Convert prices to distances by composing the pipeline.
+
+        Steps: convert price levels to returns, compute pairwise correlation
+        (or apply shrinkage / PCA), and map correlations into distances.
+
+        Args:
+            price_df (pandas.DataFrame): Price level DataFrame.
+            min_periods (int): Minimum observations required for correlations.
+            corr_method (str): Correlation method for base correlation.
+            shrink_method (str | None): Optional 'lw' or 'pca' denoising method.
+            pca_n_components (int | None): PCA components when using PCA.
+            pca_explained_variance (float | None): Explained variance threshold.
+
+        Returns:
+            pandas.DataFrame: Pairwise distance matrix.
         """
         ret = DistancesUtils.price_to_return_df(price_df)
 
@@ -250,11 +326,32 @@ class DistancesUtils:
 
 
 class UnionFind:
+    """Disjoint-set (union-find) data structure with path compression.
+
+    Supports union-by-size and path compression. Designed for use with
+    Kruskal's algorithm when building minimum spanning trees.
+    """
+
     def __init__(self, nodes: list[str]) -> None:
+        """Create a UnionFind structure for the provided nodes.
+
+        Args:
+            nodes (list[str]): List of node labels to initialize.
+        """
         self.parents = {node: node for node in nodes}
         self.sizes = {node: 1 for node in nodes}
 
     def find(self, node: str) -> str:
+        """Find and return the representative (root) of ``node``.
+
+        Path compression is applied to flatten the tree for future queries.
+
+        Args:
+            node (str): Node label to find.
+
+        Returns:
+            str: Root representative of the set containing ``node``.
+        """
         if self.parents[node] == node:
             return node
 
@@ -263,6 +360,19 @@ class UnionFind:
         return self.parents[node]
 
     def union(self, node1: str, node2: str) -> bool:
+        """Union the sets containing ``node1`` and ``node2``.
+
+        Uses union-by-size heuristic and returns ``True`` if a union took
+        place (the nodes were previously in different sets) or ``False`` if
+        they were already connected.
+
+        Args:
+            node1 (str): First node.
+            node2 (str): Second node.
+
+        Returns:
+            bool: ``True`` if the union merged two sets, ``False`` otherwise.
+        """
         root1, root2 = self.find(node1), self.find(node2)
         if root1 == root2:
             return False
@@ -278,13 +388,39 @@ class UnionFind:
         return True
 
     def get_size(self, node: str) -> int:
+        """Return the size of the set containing ``node``.
+
+        Args:
+            node (str): Node label.
+
+        Returns:
+            int: Number of elements in the set containing ``node``.
+        """
         return self.sizes[self.find(node)]
 
 
 class MST:
+    """Build a minimum spanning tree (MST) using Kruskal's algorithm.
+
+    Constructed from a full adjacency (weight) matrix and optional node
+    labels; the resulting MST is stored as an adjacency dictionary mapping
+    each node to a list of (neighbor, weight) tuples.
+    """
+
     def __init__(
         self, adj_matrix: list[list[float]], nodes: Optional[list[str]] = None
     ) -> None:
+        """Initialize and compute the MST for the given adjacency matrix.
+
+        Args:
+            adj_matrix (list[list[float]]): Square adjacency/weight matrix.
+            nodes (list[str] | None): Optional node labels corresponding to
+                matrix rows/columns. If omitted, integer labels 0..n-1 are used.
+
+        Raises:
+            ValueError: If the adjacency matrix is empty or not square, or if
+                the provided `nodes` length doesn't match the matrix size.
+        """
         n = len(adj_matrix)
         if n == 0 or any(len(row) != n for row in adj_matrix):
             raise ValueError("Adjacency matrix must be non-empty and square.")
@@ -299,6 +435,7 @@ class MST:
         self.mst_adj = self._kruskal()
 
     def _make_edges_heap(self) -> list[tuple[float, int, int]]:
+        """Create a min-heap of edges (weight, i, j) for Kruskal's algorithm."""
         edges_heap = []
         for i in range(self.n):
             for j in range(i + 1, self.n):
@@ -308,6 +445,12 @@ class MST:
         return edges_heap
 
     def _kruskal(self) -> dict[str, list[tuple[str, float]]]:
+        """Run Kruskal's algorithm and return MST adjacency as a dict.
+
+        Returns:
+            dict: Mapping node -> list of (neighbor, weight) tuples representing
+            the undirected MST adjacency.
+        """
         uf = UnionFind(self.nodes)
         edges_heap = self._make_edges_heap()
         mst_adj_dict = {node: [] for node in self.nodes}
@@ -325,27 +468,47 @@ class MST:
         return mst_adj_dict
 
     def get_adj_dict(self) -> dict[str, list[tuple[str, float]]]:
+        """Return the MST adjacency dictionary.
+
+        Returns:
+            dict: Node -> list of (neighbor, weight) tuples.
+        """
         return self.mst_adj
 
 
 class TreeUtils:
-    """
-    Utilities for working with a weighted tree (MST).
-    Expects adjacency as dict: node -> list[(neighbor, weight)] with undirected edges.
+    """Utilities for working with weighted trees (MST).
+
+    Functions operate on adjacency dictionaries mapping node -> list of
+    (neighbor, weight) tuples and provide helpers for distances, degrees,
+    components after node removal, and path-betweenness counts.
     """
 
     @staticmethod
     def nodes_from_adj(adj: Dict[Any, List[Tuple[Any, float]]]) -> List[Any]:
+        """Return the list of nodes in the adjacency dictionary.
+
+        Args:
+            adj (dict): Adjacency mapping node -> list[(neighbor, weight)].
+
+        Returns:
+            list: Node labels.
+        """
         return list(adj.keys())
 
     @staticmethod
     def all_pairs_tree_distance(
         adj: Dict[Any, List[Tuple[Any, float]]], nodes: Optional[Sequence[Any]] = None
     ) -> Dict[Any, Dict[Any, float]]:
-        """
-        Compute all-pairs distances on a tree via repeated BFS/DFS.
+        """Compute all-pairs path lengths in a tree using BFS per source.
 
-        Returns nested dict dist[u][v] with path lengths (sum of edge weights).
+        Args:
+            adj (dict): Tree adjacency mapping.
+            nodes (sequence | None): Subset (or ordering) of nodes to compute;
+                defaults to ``adj.keys()``.
+
+        Returns:
+            dict: Nested mapping ``dist[u][v]`` -> path length (float).
         """
         if nodes is None:
             nodes = list(adj.keys())
@@ -367,8 +530,17 @@ class TreeUtils:
     def path_length_between(
         adj: Dict[Any, List[Tuple[Any, float]]], src: Any, dst: Any
     ) -> float:
-        """
-        Compute path length between two nodes on a tree via BFS.
+        """Return the path length between ``src`` and ``dst`` in the tree.
+
+        If nodes are disconnected (should not occur in a tree) returns ``inf``.
+
+        Args:
+            adj (dict): Tree adjacency mapping.
+            src: Source node.
+            dst: Destination node.
+
+        Returns:
+            float: Path length (sum of weights) or ``numpy.inf`` if unreachable.
         """
         if src == dst:
             return 0.0
@@ -386,16 +558,31 @@ class TreeUtils:
 
     @staticmethod
     def argmax_dict(d: Dict[Any, float]) -> Any:
+        """Return the key with the maximum value in mapping ``d`` or ``None``.
+
+        Args:
+            d (dict): Mapping keys -> numeric values.
+
+        Returns:
+            Any | None: Key with maximum value or ``None`` when ``d`` is empty.
+        """
         if not d:
             return None
+
         return max(d, key=d.get)
 
     @staticmethod
     def remove_nodes_and_components(
         adj: Dict[Any, List[Tuple[Any, float]]], remove: Set[Any]
     ) -> List[Set[Any]]:
-        """
-        Remove 'remove' nodes from the tree, return connected components of the remaining graph.
+        """Remove a set of nodes and return connected components of the remainder.
+
+        Args:
+            adj (dict): Original adjacency mapping.
+            remove (set): Nodes to remove.
+
+        Returns:
+            list[set]: List of connected component node sets after removal.
         """
         remaining = set(adj.keys()) - remove
         seen = set()
@@ -418,18 +605,32 @@ class TreeUtils:
 
     @staticmethod
     def degrees(adj: Dict[Any, List[Tuple[Any, float]]]) -> Dict[Any, int]:
+        """Return degree (number of neighbors) for each node in ``adj``.
+
+        Args:
+            adj (dict): Adjacency mapping.
+
+        Returns:
+            dict: Mapping node -> integer degree.
+        """
         return {u: len(neigh) for u, neigh in adj.items()}
 
     @staticmethod
     def path_betweenness_counts(
         adj: Dict[Any, List[Tuple[Any, float]]],
     ) -> Dict[Any, int]:
-        """
-        For a tree, the number of simple paths passing through a node equals:
-        sum over all unordered pairs of components created by removing that node.
-        If removing u yields component sizes s1, s2, ..., sd (d = degree(u)),
-        then betw(u) = sum_{i<j} s_i * s_j = ( (sum s_i)^2 - sum s_i^2 ) / 2.
-        Here sum s_i = n - 1 (excluding u).
+        """Compute the path betweenness count for every node in a tree.
+
+        For a tree, the number of simple source-destination paths that pass
+        through node ``u`` can be derived from component sizes produced by
+        removing ``u``. The formula used is
+        ``betw(u) = sum_{i<j} s_i * s_j`` which is computed efficiently.
+
+        Args:
+            adj (dict): Tree adjacency mapping.
+
+        Returns:
+            dict: Mapping node -> integer betweenness count.
         """
         nodes = list(adj.keys())
         n = len(nodes)

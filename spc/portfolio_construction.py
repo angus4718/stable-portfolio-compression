@@ -21,13 +21,42 @@ from spc.utils import (
 
 
 class BasisSelector:
-    """Basis selection on a tree (max-spread, hub-branch)."""
+    """Select representative basis nodes from a tree (minimum spanning tree).
+
+    The selector extracts a small set of representative "basis" nodes from a
+    tree topology (typically an MST over asset distances). It provides two
+    primary selection strategies:
+        - ``select_max_spread_weighted``: iteratively picks nodes that maximize a
+            combination of tree spread and per-node importance weights.
+        - ``select_hub_branch``: selects central hubs (by degree/betweenness)
+            then selects representatives from the remaining branches.
+
+    Attributes:
+            adj (dict): Adjacency dictionary for the tree (node -> list[(nbr, weight)]).
+            nodes (list): Ordered list of nodes used by the selector.
+            n (int): Number of nodes in ``nodes``.
+            _dist (dict|None): Optional all-pairs tree distance table (node->node->dist).
+            _deg (dict): Node degrees computed from adjacency.
+            _betw (dict): Simple path-betweenness counts per node.
+
+    Example:
+            selector = BasisSelector(mst_adj)
+            basis = selector.select_max_spread_weighted(k=10, weights=weight_map, alpha=0.5)
+    """
 
     def __init__(
         self,
         mst_adj: Dict[Any, List[Tuple[Any, float]]],
         nodes: Optional[Sequence[Any]] = None,
     ):
+        """Initialize the selector with a tree adjacency mapping.
+
+        Args:
+            mst_adj: Adjacency mapping for the tree where keys are node labels
+                and values are lists of (neighbor, weight) pairs.
+            nodes: Optional explicit ordering of nodes to use. If ``None``, the
+                node ordering is inferred from the adjacency mapping.
+        """
         self.adj = mst_adj
         self.nodes = (
             list(nodes) if nodes is not None else TreeUtils.nodes_from_adj(self.adj)
@@ -41,6 +70,16 @@ class BasisSelector:
     def _normalize_dict(
         self, values: Dict[Any, float], fallback=0.0
     ) -> Dict[Any, float]:
+        """Normalize a mapping of node -> numeric value into [0, 1].
+
+        Args:
+            values (dict): Mapping node -> numeric value. Missing nodes are
+                treated as 0.0.
+            fallback (float): Value to use when ``values`` is empty.
+
+        Returns:
+            dict: Normalized mapping for every node in ``self.nodes``.
+        """
         nodes = self.nodes
         if not values:
             return {u: float(fallback) for u in nodes}
@@ -50,11 +89,21 @@ class BasisSelector:
         return {u: (float(values.get(u, 0.0)) - mn) / rng for u in nodes}
 
     def _avg_dist(self) -> Dict[Any, float]:
+        """Return average tree distance from each node to all others.
+
+        Returns:
+            dict: node -> mean distance to all nodes in ``self.nodes``.
+        """
         return {
             u: np.mean([self._dist_uv(u, v) for v in self.nodes]) for u in self.nodes
         }
 
     def _dist_uv(self, u: Any, v: Any) -> float:
+        """Return path length between nodes ``u`` and ``v``.
+
+        Uses the precomputed all-pairs distance table if available, otherwise
+        falls back to computing via :func:`TreeUtils.path_length_between`.
+        """
         if self._dist is not None:
             return self._dist[u][v]
         return TreeUtils.path_length_between(self.adj, u, v)
@@ -77,7 +126,7 @@ class BasisSelector:
                  alpha=0.5: balanced between spread and weight
 
         Returns:
-        - List of selected basis nodes
+            list: Selected basis node labels (length <= k).
         """
         if k <= 0 or self.n == 0:
             return []
@@ -128,7 +177,19 @@ class BasisSelector:
         then decompose tree minus hubs into branches (connected components) and add representatives
         from the largest remaining branches by path length until |B|=k.
 
-        If h is None, we set h = max(1, min(k-1, round(0.2 * k))).
+        If ``h`` is ``None``, we set ``h = max(1, min(k-1, round(0.2 * k)))``.
+
+        Args:
+            k (int): Total number of basis nodes to select.
+            h (int | None): Number of hubs to pick; if ``None`` a heuristic is used.
+            alpha (float): Trade-off between degree and betweenness for centrality.
+            weights (dict | None): Node importance weights that can influence hub selection.
+            weight_gamma (float): Weighting parameter mixing centrality and ``weights``.
+            rep_alpha (float): Trade-off when selecting a representative from a branch
+                (distance-to-hub vs. node weight).
+
+        Returns:
+            list: Chosen basis node labels (length <= k).
         """
         if k <= 0 or self.n == 0:
             return []
@@ -195,16 +256,53 @@ class BasisSelector:
 class LocalRidgeRunner:
     """Local neighbor-based Ridge regression pipeline.
 
-    Usage: LocalRidgeRunner(config).run()
+    This runner performs Ridge regressions for non-basis assets using a local
+    neighborhood of basis assets determined from time-local distance matrices
+    (to avoid look-ahead bias). Results (coefficients timeseries, coefficient
+    snapshot, reconstructed returns and regression errors) are written to the
+    outputs directory under the project root when `run()` is executed.
+
+    Attributes:
+        config (dict): Parsed configuration dictionary. Expected keys include
+            entries under `input`, `output`, `distance_computation`,
+            `pca_denoising`, and `regression` used by the runner.
+
+    Example:
+        runner = LocalRidgeRunner(config)
+        coef_df, recon_df, errors_df = runner.run()
     """
 
     def __init__(self, config: Dict):
+        """Initialize the runner with a configuration mapping.
+
+        Args:
+            config: Configuration dictionary for the runner.
+        """
         self.config = config
 
     def _compute_returns(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Convert price series to returns and drop empty rows.
+
+        Args:
+            prices: DataFrame of prices indexed by date with columns as assets.
+
+        Returns:
+            DataFrame of returns with the same columns as `prices`.
+        """
         return DistancesUtils.price_to_return_df(prices).dropna(how="all")
 
     def _compute_distance_df(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Compute a full asset-to-asset distance DataFrame from prices.
+
+        This helper wraps `DistancesUtils.price_to_distance_df` and reads
+        parameters from the runner's config.
+
+        Args:
+            prices: Price DataFrame indexed by date.
+
+        Returns:
+            DataFrame of pairwise distances between assets.
+        """
         return DistancesUtils.price_to_distance_df(
             prices,
             min_periods=cfg_val(self.config, "distance_computation", "min_periods", 1),
@@ -223,6 +321,18 @@ class LocalRidgeRunner:
         )
 
     def _filter_basis(self, basis_list: List[str], returns: pd.DataFrame) -> List[str]:
+        """Filter the provided basis list to those present in `returns`.
+
+        Args:
+            basis_list: Sequence of basis asset labels.
+            returns: Returns DataFrame whose columns define the available universe.
+
+        Returns:
+            A filtered list containing only basis tickers present in `returns`.
+
+        Raises:
+            ValueError: If no basis tickers are found in the returns data.
+        """
         basis_present = [b for b in basis_list if b in returns.columns]
         if len(basis_present) != len(basis_list):
             missing = set(basis_list) - set(basis_present)
@@ -238,6 +348,18 @@ class LocalRidgeRunner:
         dist_df: pd.DataFrame,
         q_neighbors: Optional[int],
     ) -> List[str]:
+        """Select nearest basis neighbors for `asset` using a distance matrix.
+
+        Args:
+            asset: Asset label for which to select neighbors.
+            basis_list: Ordered list of candidate basis assets.
+            dist_df: Square DataFrame of pairwise distances (index and columns are assets).
+            q_neighbors: Optional maximum number of neighbors to return. If
+                ``None``, return all available neighbors sorted by distance.
+
+        Returns:
+            List of selected neighbor basis labels (may be empty).
+        """
         if asset not in dist_df.index:
             return []
         dists = dist_df.loc[asset, basis_list].dropna()
@@ -256,6 +378,27 @@ class LocalRidgeRunner:
         ridge_alpha: float,
         q_neighbors: Optional[int],
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Run rolling local Ridge regressions for non-basis assets.
+
+        For each date, a time-local distance matrix is computed (or fetched from
+        cache) and used to select nearby basis assets for each non-basis asset.
+        A Ridge model is fit on historical returns up to that date and the
+        time-series of coefficients, reconstructed returns and per-asset
+        errors are returned.
+
+        Args:
+            returns: Returns DataFrame indexed by date with asset columns.
+            basis_list: List of basis asset labels to consider as regressors.
+            prices: Price DataFrame used when computing time-local distances.
+            ridge_alpha: Regularization parameter for Ridge regression.
+            q_neighbors: Optional maximum number of neighbors to use per asset.
+
+        Returns:
+            Tuple of (coef_long_df, recon_df, errors_df):
+                - coef_long_df: long-form DataFrame with columns [date, asset, basis, coef]
+                - recon_df: DataFrame of reconstructed returns for non-basis assets
+                - errors_df: DataFrame indexed by asset with columns ['rmse','n_obs','n_basis_used']
+        """
         non_basis = [c for c in returns.columns if c not in basis_list]
         if len(non_basis) == 0:
             return (
@@ -390,6 +533,14 @@ class LocalRidgeRunner:
         errors_df: pd.DataFrame,
         out_dir: Path,
     ) -> None:
+        """Persist outputs to CSV files under `out_dir`.
+
+        Args:
+            coef_df: Long-form coefficients timeseries DataFrame.
+            recon_df: Reconstructed returns DataFrame.
+            errors_df: Per-asset error summary DataFrame.
+            out_dir: Directory to write CSV outputs into.
+        """
         out_dir.mkdir(parents=True, exist_ok=True)
         coef_out_ts = out_dir / "coefficients_ridge_timeseries.csv"
         coef_df.to_csv(coef_out_ts, index=False)
@@ -411,6 +562,12 @@ class LocalRidgeRunner:
         errors_df.to_csv(out_dir / "regression_errors.csv")
 
     def run(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Execute the regression pipeline and write outputs.
+
+        Returns:
+            Tuple of (coef_df, recon_df, errors_df) as produced by
+            :py:meth:`_run_all_regressions`.
+        """
         prices_path = Path(
             cfg_val(
                 self.config, "input", "prices_path", "synthetic_data/prices_monthly.csv"
@@ -444,18 +601,42 @@ class LocalRidgeRunner:
 class WeightMapper:
     """Compute basis weights from index weights using Ridge coefficients.
 
-    - Accepts a parsed config dict.
-    - `run()` computes time-series basis weights (preferred) or falls back to snapshot,
-      normalizes rows, writes outputs into `_ROOT / 'outputs'`, and returns the
-      computed basis_weights DataFrame.
+    The mapper converts coefficient outputs (either timeseries or snapshot)
+    into basis weights by constructing an asset->basis mapping matrix and
+    applying it to index weights. Outputs are written under the project
+    `outputs` directory.
+
+    Attributes:
+        config (dict): Parsed configuration dictionary with `input`/`output`
+            locations used by :py:meth:`run`.
     """
 
     def __init__(self, config: Dict):
+        """Initialize the mapper with configuration.
+
+        Args:
+            config: Configuration dictionary used to resolve input/output paths.
+        """
         self.config = config
 
     def _compute_from_timeseries(
         self, coeffs_ts: pd.DataFrame, w_spx: pd.DataFrame, basis_list: list[str]
     ) -> pd.DataFrame:
+        """Construct basis weight time-series from coefficient timeseries.
+
+        The method pivots the coefficients timeseries into per-date A matrices
+        (asset -> basis), aligns the universe with the index weight columns,
+        normalizes asset rows, and multiplies index weights to produce basis
+        weights per date.
+
+        Args:
+            coeffs_ts: Long-form DataFrame with columns ['date','asset','basis','coef'].
+            w_spx: DataFrame of index weights indexed by date with asset columns.
+            basis_list: Ordered list of basis asset labels.
+
+        Returns:
+            DataFrame of basis weights indexed by the dates from `w_spx`.
+        """
         coeffs_ts["date"] = pd.to_datetime(coeffs_ts["date"])
         coeffs_ts = coeffs_ts.sort_values("date")
         coeffs_by_date = {}
@@ -511,6 +692,16 @@ class WeightMapper:
     def _compute_from_snapshot(
         self, coeffs: pd.DataFrame, w_spx: pd.DataFrame, basis_list: list[str]
     ) -> pd.DataFrame:
+        """Construct basis weights from a single coefficient snapshot.
+
+        Args:
+            coeffs: DataFrame indexed by asset with columns corresponding to basis labels (coefficients).
+            w_spx: DataFrame of index weights (single snapshot or time-indexed; this method uses columns).
+            basis_list: Ordered list of basis labels.
+
+        Returns:
+            DataFrame (or Series) of basis weights aligned with `w_spx` columns.
+        """
         universe = [str(c) for c in w_spx.columns]
         A = pd.DataFrame(0.0, index=universe, columns=basis_list, dtype=float)
         for b in basis_list:
@@ -535,6 +726,16 @@ class WeightMapper:
     def _normalize_and_save_single_row(
         self, basis_weights: pd.DataFrame, out_dir: Path
     ) -> None:
+        """Normalize computed basis weights and persist raw/normalized CSVs.
+
+        This helper writes a raw CSV (`basis_weights_raw.csv`) if any rows do
+        not sum to (approximately) 1, then writes a normalized CSV
+        (`basis_weights.csv`) where rows with positive sums are scaled to sum=1.
+
+        Args:
+            basis_weights: DataFrame of basis weights (index = date, columns = basis labels).
+            out_dir: Directory where output CSV files will be saved.
+        """
         tol = 1e-6
         row_sums = basis_weights.sum(axis=1)
         is_unit = row_sums.apply(lambda x: np.isclose(x, 1.0, atol=tol))
@@ -567,6 +768,19 @@ class WeightMapper:
         )
 
     def run(self) -> pd.DataFrame:
+        """Compute and save basis weights according to configuration.
+
+        The method resolves input/output paths from the config, loads either
+        a coefficient timeseries or snapshot, loads index weights, computes
+        basis weights (timeseries preferred), normalizes/saves outputs and
+        returns the final basis weights DataFrame.
+
+        Returns:
+            DataFrame: Final basis weights (indexed by date if timeseries).
+
+        Raises:
+            FileNotFoundError: If neither coefficients nor weights input files are found.
+        """
         out_dir, basis_path, coeffs_path, coeffs_ts_path, weights_path = (
             resolve_output_and_input_paths(self.config, _ROOT)
         )
