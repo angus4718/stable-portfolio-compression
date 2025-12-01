@@ -139,7 +139,7 @@ class BasisSelector:
         init_score = {
             u: alpha * avg_dist[u] + (1 - alpha) * normalized_weights[u] for u in nodes
         }
-        b1 = TreeUtils.argmax_dict(init_score)
+        b1 = max(init_score, key=init_score.get)
         B: List[Any] = [b1]
 
         nearest_dist = {v: self._dist_uv(v, b1) for v in nodes}
@@ -152,7 +152,7 @@ class BasisSelector:
             }
             if not candidate_scores:
                 break
-            v_star = TreeUtils.argmax_dict(candidate_scores)
+            v_star = max(candidate_scores, key=candidate_scores.get)
             if v_star is None:
                 break
             B.append(v_star)
@@ -291,35 +291,6 @@ class LocalRidgeRunner:
         """
         return DistancesUtils.price_to_return_df(prices).dropna(how="all")
 
-    def _compute_distance_df(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """Compute a full asset-to-asset distance DataFrame from prices.
-
-        This helper wraps `DistancesUtils.price_to_distance_df` and reads
-        parameters from the runner's config.
-
-        Args:
-            prices: Price DataFrame indexed by date.
-
-        Returns:
-            DataFrame of pairwise distances between assets.
-        """
-        return DistancesUtils.price_to_distance_df(
-            prices,
-            min_periods=cfg_val(self.config, "distance_computation", "min_periods", 1),
-            corr_method=cfg_val(
-                self.config, "distance_computation", "corr_method", "pearson"
-            ),
-            shrink_method=cfg_val(
-                self.config, "distance_computation", "shrink_method", None
-            ),
-            pca_n_components=cfg_val(
-                self.config, "pca_denoising", "pca_n_components", None
-            ),
-            pca_explained_variance=cfg_val(
-                self.config, "pca_denoising", "pca_explained_variance", None
-            ),
-        )
-
     def _filter_basis(self, basis_list: List[str], returns: pd.DataFrame) -> List[str]:
         """Filter the provided basis list to those present in `returns`.
 
@@ -416,7 +387,6 @@ class LocalRidgeRunner:
         min_obs = 10
 
         # We'll compute distances in a time-local fashion to avoid look-ahead.
-        # Use a small cache keyed by (end_date, window_size, shrink_method, pca params).
         dist_cache: Dict[tuple, pd.DataFrame] = {}
 
         # distance window and shrink settings from config

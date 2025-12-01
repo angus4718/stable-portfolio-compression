@@ -71,8 +71,7 @@ class DistancesUtils:
 
         This helper slices the supplied ``prices`` DataFrame to the requested
         window (rolling or expanding) up to ``end_date``, invokes the price->
-        distance pipeline, and caches results keyed by the window parameters
-        and column ordering for reuse.
+        distance pipeline, and returns the resulting distance matrix.
 
         Args:
             prices (pandas.DataFrame): Price level time series indexed by date.
@@ -222,15 +221,14 @@ class DistancesUtils:
         if n_components is not None:
             k = min(n_components, n_assets)
         elif explained_variance is not None:
-            # Use sklearn PCA to find k that explains the desired variance
+            # Use PCA to find k that explains the desired variance
             pca_temp = PCA()
             pca_temp.fit(corr_matrix)
             cumsum_var = np.cumsum(pca_temp.explained_variance_ratio_)
             k = np.argmax(cumsum_var >= explained_variance) + 1
             k = max(1, min(k, n_assets))
         else:
-            # Default: use min(10, n_assets - 1)
-            k = min(10, max(1, n_assets - 1))
+            k = max(1, n_assets // 2)
 
         # Apply PCA
         pca = PCA(n_components=k)
@@ -513,18 +511,10 @@ class TreeUtils:
         if nodes is None:
             nodes = list(adj.keys())
 
-        def bfs_from(src):
-            d = {src: 0.0}
-            q = deque([src])
-            while q:
-                u = q.popleft()
-                for v, w in adj[u]:
-                    if v not in d:
-                        d[v] = d[u] + float(w)
-                        q.append(v)
-            return d
-
-        return {s: {v: bfs_from(s).get(v, np.inf) for v in nodes} for s in nodes}
+        return {
+            s: {v: TreeUtils._bfs_from(adj, s).get(v, np.inf) for v in nodes}
+            for s in nodes
+        }
 
     @staticmethod
     def path_length_between(
@@ -544,32 +534,38 @@ class TreeUtils:
         """
         if src == dst:
             return 0.0
+        dist = TreeUtils._bfs_from(adj, src)
+        return dist.get(dst, np.inf)
+
+    @staticmethod
+    def _bfs_from(
+        adj: Dict[Any, List[Tuple[Any, float]]], src: Any
+    ) -> Dict[Any, float]:
+        """Perform a breadth-first search from a source node and return distances.
+
+        Distances are computed as the sum of edge weights along the unique path in
+        the tree from ``src`` to each reachable node.
+
+        Args:
+            adj: Adjacency mapping where keys are node labels and values are
+                lists of ``(neighbor, weight)`` tuples representing an
+                undirected weighted tree.
+            src: The source node label to start the traversal from.
+
+        Returns:
+            A dictionary mapping each reachable node label to the path length
+            (float) from ``src``. Nodes that are not reachable from ``src``
+            are not included in the returned mapping.
+        """
+        d: Dict[Any, float] = {src: 0.0}
         q = deque([src])
-        dist = {src: 0.0}
         while q:
             u = q.popleft()
             for v, w in adj[u]:
-                if v not in dist:
-                    dist[v] = dist[u] + float(w)
-                    if v == dst:
-                        return dist[v]
+                if v not in d:
+                    d[v] = d[u] + float(w)
                     q.append(v)
-        return np.inf
-
-    @staticmethod
-    def argmax_dict(d: Dict[Any, float]) -> Any:
-        """Return the key with the maximum value in mapping ``d`` or ``None``.
-
-        Args:
-            d (dict): Mapping keys -> numeric values.
-
-        Returns:
-            Any | None: Key with maximum value or ``None`` when ``d`` is empty.
-        """
-        if not d:
-            return None
-
-        return max(d, key=d.get)
+        return d
 
     @staticmethod
     def remove_nodes_and_components(
