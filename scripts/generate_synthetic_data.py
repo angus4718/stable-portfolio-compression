@@ -28,7 +28,7 @@ def main() -> None:
 
     config = _load_config(config_path)
 
-    # simulation parameters (use shared cfg_val helper)
+    # simulation parameters
     n_sectors = int(cfg_val(config, "simulation_parameters", "n_sectors", 10))
     assets_per_sector = int(
         cfg_val(config, "simulation_parameters", "assets_per_sector", 20)
@@ -64,17 +64,21 @@ def main() -> None:
             0.2,
         )
     )
-    cap_pareto_alpha_cfg = cfg_val(
-        {"market_cap_parameters": market_cap_params},
-        "market_cap_parameters",
-        "cap_pareto_alpha",
-        None,
+    cap_pareto_alpha_cfg = float(
+        cfg_val(
+            {"market_cap_parameters": market_cap_params},
+            "market_cap_parameters",
+            "cap_pareto_alpha",
+            1.2,
+        )
     )
-    cap_scale_cfg = cfg_val(
-        {"market_cap_parameters": market_cap_params},
-        "market_cap_parameters",
-        "cap_scale",
-        None,
+    cap_scale_cfg = float(
+        cfg_val(
+            {"market_cap_parameters": market_cap_params},
+            "market_cap_parameters",
+            "cap_scale",
+            50,
+        )
     )
 
     simulator = DynamicIndexSimulator(
@@ -89,25 +93,23 @@ def main() -> None:
         sector_volatility=sector_volatility,
         sector_correlation=sector_correlation,
         sector_drift=sector_drift_cfg,
-        cap_pareto_alpha=(
-            float(cap_pareto_alpha_cfg) if cap_pareto_alpha_cfg is not None else None
-        ),
-        cap_scale=(float(cap_scale_cfg) if cap_scale_cfg is not None else None),
+        cap_pareto_alpha=cap_pareto_alpha_cfg,
+        cap_scale=cap_scale_cfg,
     )
 
     prices_df, _, _ = simulator.simulate_prices()
     weights_df, market_cap_df = simulator.generate_market_weights(prices_df)
 
-    max_stock_weight = cfg_val(
-        {"market_cap_parameters": market_cap_params},
-        "market_cap_parameters",
-        "max_stock_weight",
-        None,
+    max_stock_weight = float(
+        cfg_val(
+            {"market_cap_parameters": market_cap_params},
+            "market_cap_parameters",
+            "max_stock_weight",
+            None,
+        )
     )
     if max_stock_weight is not None:
-        weights_df = simulator.apply_max_stock_weight(
-            weights_df, float(max_stock_weight)
-        )
+        weights_df = simulator.apply_max_stock_weight(weights_df, max_stock_weight)
 
     out_path = Path(output_dir)
     if not out_path.is_absolute():

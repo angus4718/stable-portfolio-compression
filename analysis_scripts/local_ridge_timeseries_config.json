@@ -1,0 +1,12 @@
+{
+  "prices_path": "synthetic_data/prices_monthly.csv",
+  "basis_timeseries_path": "analysis_outputs/basis_timeseries.csv",
+  "output_path": "analysis_outputs",
+  "ridge_alpha": 0.0,
+  "q_neighbors": 3,
+  "min_periods": 1,
+  "corr_method": "pearson",
+  "shrink_method": null,
+  "pca_n_components": null,
+  "pca_explained_variance": null
+}

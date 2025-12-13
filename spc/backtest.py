@@ -7,9 +7,9 @@ to evaluate index replication performance. It includes:
     RMSE and persisting evaluation outputs and diagnostic plots.
 - `StrategyBacktester`: Uses regression coefficients (timeseries or snapshot)
     to map index weights into basis weights and evaluate replication performance.
-- `BaselineBacktester`: Simple top-X replicator for baseline comparisons.
+- `BaselineBacktester`: Simple top-N replicator for baseline comparisons.
 
-The code expects CSV inputs under the project `synthetic_data` and `outputs`
+The code expects CSV inputs under the project `synthetic_data` and `analysis_outputs`
 directories and writes evaluation artifacts under `backtest/`.
 """
 
@@ -25,12 +25,15 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
 
 import sys
+from tqdm import tqdm
 
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from spc.graph import DistancesUtils
+from spc.portfolio_construction import WeightMapper
+from spc.utils import load_basis_list_from_path
 
 
 class Backtester:
@@ -43,40 +46,30 @@ class Backtester:
     Attributes:
         prices (pd.DataFrame | None): Loaded price series indexed by date.
         w_spx (pd.DataFrame | None): Loaded index weights indexed by date.
-
-    Usage:
-        bt = Backtester()
-        bt.load_prices_and_weights()
-        returns = bt.compute_returns(prices)
-        summary = bt.evaluate_and_save(...)
     """
 
     def __init__(self) -> None:
         self.prices: Optional[pd.DataFrame] = None
         self.w_spx: Optional[pd.DataFrame] = None
 
-    def load_prices_and_weights(self):
-        """Load prices and index weights from the project's synthetic data CSVs.
+    def load_prices_and_weights(self) -> None:
+        """Load prices and index weights.
 
-        Reads `synthetic_data/prices_monthly.csv` and
-        `synthetic_data/market_index_weights.csv` into pandas DataFrames and
-        stores them on the instance as ``self.prices`` and ``self.w_spx``.
-
-        Raises:
-            FileNotFoundError: If either expected CSV is missing.
+        If ``self.prices`` or ``self.w_spx`` are already set (e.g., provided at
+        initialization), they are used directly. Otherwise the method falls back
+        to reading the default CSV files under `synthetic_data/`.
         """
+        if self.prices is None:
+            prices_path = _ROOT / "synthetic_data" / "prices_monthly.csv"
+            self.prices = pd.read_csv(
+                prices_path, index_col=0, parse_dates=True
+            ).sort_index()
 
-        prices_path = _ROOT / "synthetic_data" / "prices_monthly.csv"
-        weights_path = _ROOT / "synthetic_data" / "market_index_weights.csv"
-        for p in (prices_path, weights_path):
-            if not p.exists():
-                raise FileNotFoundError(f"Required input not found: {p}")
-        self.prices = pd.read_csv(
-            prices_path, index_col=0, parse_dates=True
-        ).sort_index()
-        self.w_spx = pd.read_csv(
-            weights_path, index_col=0, parse_dates=True
-        ).sort_index()
+        if self.w_spx is None:
+            weights_path = _ROOT / "synthetic_data" / "market_index_weights.csv"
+            self.w_spx = pd.read_csv(
+                weights_path, index_col=0, parse_dates=True
+            ).sort_index()
 
     @staticmethod
     def compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
@@ -105,12 +98,12 @@ class Backtester:
         arr = diff.dropna().values
         if arr.size == 0:
             return {}
-        mean = float(np.mean(arr))
-        std = float(np.std(arr, ddof=1))
-        rmse = float(np.sqrt(np.mean(arr**2)))
+        mean = np.mean(arr)
+        std = np.std(arr, ddof=1)
+        rmse = np.sqrt(np.mean(arr**2))
         ann_std = std * np.sqrt(12.0)
         return {
-            "n": int(arr.size),
+            "n": arr.size,
             "mean_diff": mean,
             "std_diff": std,
             "rmse": rmse,
@@ -165,7 +158,7 @@ class Backtester:
         running_rmse_series: pd.Series,
         turnover_ts: Optional[pd.Series],
         plot_name: str,
-    ):
+    ) -> None:
         """Save three-panel diagnostic plot to the `out_dir/plots` directory.
 
         The plot contains:
@@ -274,7 +267,7 @@ class Backtester:
         dates = diff.dropna().index
         if len(dates) == 0:
             raise RuntimeError("No overlapping return observations to evaluate.")
-        n_tail = max(1, int(len(dates) * (float(tail_percent) / 100.0)))
+        n_tail = max(1, int(len(dates) * (tail_percent / 100.0)))
         tail_idx = dates[-n_tail:]
 
         tail_idx_ret = idx_returns.loc[tail_idx]
@@ -290,10 +283,8 @@ class Backtester:
 
         stats = self.summarize(tail_diff)
         try:
-            r2 = float(
-                r2_score(
-                    tail_idx_ret.fillna(0.0).values, tail_rep_ret.fillna(0.0).values
-                )
+            r2 = r2_score(
+                tail_idx_ret.fillna(0.0).values, tail_rep_ret.fillna(0.0).values
             )
         except Exception:
             r2 = float("nan")
@@ -302,15 +293,15 @@ class Backtester:
         tail_std = stats.get("std_diff")
         info_ratio = None
         if tail_mean is not None and tail_std and tail_std > 0:
-            info_ratio = float(tail_mean / tail_std * np.sqrt(12.0))
+            info_ratio = tail_mean / tail_std * np.sqrt(12.0)
 
         diffs_tail = tail_df["diff"].fillna(0.0).astype(float)
         running_rmse = self.running_rmse(diffs_tail)
 
         diffs_all = diff.dropna().astype(float)
         if len(diffs_all) > 0:
-            tracking_error_rmse = float(np.sqrt(np.mean(diffs_all.values**2)))
-            tracking_error_annualized = float(tracking_error_rmse * np.sqrt(12.0))
+            tracking_error_rmse = np.sqrt(np.mean(diffs_all.values**2))
+            tracking_error_annualized = tracking_error_rmse * np.sqrt(12.0)
         else:
             tracking_error_rmse = None
             tracking_error_annualized = None
@@ -320,7 +311,7 @@ class Backtester:
         try:
             turnover_ts = self.compute_turnover(rep_weights, tail_idx)
             if len(tail_idx) > 0:
-                avg_turnover_tail = float(turnover_ts.mean())
+                avg_turnover_tail = turnover_ts.mean()
         except Exception:
             turnover_ts = None
 
@@ -337,6 +328,7 @@ class Backtester:
             }
         )
 
+        # File path related setup
         out_dir = _ROOT / "backtest"
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -351,7 +343,6 @@ class Backtester:
         self.save_plot(out_dir, tail_df, running_rmse_series, turnover_ts, plot_name)
 
         if turnover_ts is not None:
-            # persist turnover series for inspection
             turnover_name = timeseries_name.replace("timeseries", "replicate_turnover")
             turnover_path = out_dir / turnover_name
             turnover_ts.to_csv(turnover_path, index=True, header=["turnover"])
@@ -364,7 +355,7 @@ class StrategyBacktester(Backtester):
 
     This backtester loads regression coefficient outputs (either a
     time-series of coefficients or a snapshot), loads the index weights and
-    basis list saved under `outputs/`, and produces a time-series of basis
+    basis list saved under `analysis_outputs/`, and produces a time-series of basis
     weights which is then used to compute replicated returns and evaluation
     summaries.
 
@@ -374,41 +365,64 @@ class StrategyBacktester(Backtester):
           at or before that date.
     """
 
-    def __init__(self):
-        super().__init__()
-        # Do not store filesystem roots on the instance. `load_inputs` accepts
-        # a `root` parameter and will read from the appropriate paths.
-        self.basis_list: Optional[List[str]] = None
-        self.coeffs_ts: Optional[pd.DataFrame] = None
-        self.coeffs_snap: Optional[pd.DataFrame] = None
+    def __init__(
+        self,
+        prices_df: Optional[pd.DataFrame] = None,
+        weights_df: Optional[pd.DataFrame] = None,
+        basis_df: Optional[pd.DataFrame] = None,
+        coeffs_ts: Optional[pd.DataFrame] = None,
+        coeffs_snap: Optional[pd.DataFrame] = None,
+    ) -> None:
+        """Strategy backtester can be initialized with pre-loaded dataframes.
 
-    def load_inputs(self):
+         If any argument is None the loader will fallback to reading the
+         repository CSVs when `load_inputs()` is called. This makes unit testing
+         and script-driven execution easier by allowing callers to pass in data
+        frames directly.
+        """
+        super().__init__()
+        self.basis_list: Optional[List[str]] = None
+        self.basis_df = basis_df
+        self.coeffs_ts: Optional[pd.DataFrame] = coeffs_ts
+        self.coeffs_snap: Optional[pd.DataFrame] = coeffs_snap
+        if prices_df is not None:
+            self.prices = prices_df.copy()
+        if weights_df is not None:
+            self.w_spx = weights_df.copy()
+
+    def load_inputs(self) -> None:
         """Load prices, index weights, basis list and available coefficients.
 
         This routine loads price/index inputs (via
         :py:meth:`Backtester.load_prices_and_weights`), reads the saved basis
-        list from `outputs/basis_selected.csv`, and attempts to load either a
-        coefficients timeseries (`coefficients_ridge_timeseries.csv`) or a
-        coefficient snapshot (`coefficients_ridge.csv`) into instance fields.
+        list from `analysis_outputs/basis_timeseries.csv`, and loads coefficient data
+        from `analysis_outputs/coefficients_ridge_timeseries_by_date.csv` into instance fields.
         """
+        # Ensure prices and weights are loaded (may have been provided at init)
         self.load_prices_and_weights()
-        outputs_dir = _ROOT / "outputs"
-        basis_path = outputs_dir / "basis_selected.csv"
-        if not basis_path.exists():
-            raise FileNotFoundError(f"Basis list not found: {basis_path}")
-        basis_df = pd.read_csv(basis_path)
-        self.basis_list = basis_df["ticker"].astype(str).tolist()
 
-        coeffs_ts_path = outputs_dir / "coefficients_ridge_timeseries.csv"
-        coeffs_snap_path = outputs_dir / "coefficients_ridge.csv"
-        if coeffs_ts_path.exists():
-            self.coeffs_ts = pd.read_csv(
-                coeffs_ts_path, parse_dates=["date"]
-            )  # long format
-        elif coeffs_snap_path.exists():
-            self.coeffs_snap = pd.read_csv(coeffs_snap_path, index_col=0)
+        outputs_dir = _ROOT / "analysis_outputs"
 
-    def compute_basis_weights_time_series(self) -> pd.DataFrame:
+        # Basis list
+        if self.basis_df is not None:
+            self.basis_list = [str(c) for c in self.basis_df.columns]
+        else:
+            basis_path = outputs_dir / "basis_timeseries.csv"
+            self.basis_list = load_basis_list_from_path(basis_path)
+
+        # Coefficients
+        if self.coeffs_ts is not None:
+            self.coeffs_ts["date"] = pd.to_datetime(self.coeffs_ts["date"])
+        else:
+            coeffs_by_date_path = (
+                outputs_dir / "coefficients_ridge_timeseries_by_date.csv"
+            )
+            self.coeffs_ts = pd.read_csv(coeffs_by_date_path)
+            self.coeffs_ts["date"] = pd.to_datetime(self.coeffs_ts["date"])
+
+    def compute_basis_weights_time_series(
+        self, turnover_lambda: float = 0.0
+    ) -> pd.DataFrame:
         """Compute basis weight time-series from coefficients or snapshot.
 
         When a coefficients timeseries is present, each index weight date is
@@ -436,7 +450,14 @@ class StrategyBacktester(Backtester):
             coeff_dates = sorted(coeffs_by_date.keys())
 
             basis_rows = []
-            for w_date in w_spx_aligned.index:
+            # previous full-union basis row used as warm-start for QP
+            prev_full_row = pd.Series(0.0, index=self.basis_list)
+
+            for w_date in tqdm(
+                list(w_spx_aligned.index),
+                desc="Mapping dates",
+                total=len(w_spx_aligned.index),
+            ):
                 sel_date = None
                 for cd in coeff_dates:
                     if cd <= pd.Timestamp(w_date):
@@ -455,34 +476,50 @@ class StrategyBacktester(Backtester):
                     pivot = coeffs_by_date[sel_date].reindex(
                         columns=self.basis_list, fill_value=0.0
                     )
+                    # Assume pivot is a clean pivoted DataFrame (no duplicates)
                     for asset in pivot.index.astype(str):
                         if asset not in A_date.index:
                             continue
                         for b in self.basis_list:
-                            A_date.at[asset, b] = (
-                                float(pivot.at[asset, b]) if b in pivot.columns else 0.0
-                            )
+                            if b in pivot.columns:
+                                A_date.at[asset, b] = pivot.at[asset, b]
+                            else:
+                                A_date.at[asset, b] = 0.0
 
-                row_sums_A = A_date.sum(axis=1)
-                positive = row_sums_A > 0.0
-                if positive.any():
-                    A_date.loc[positive] = A_date.loc[positive].div(
-                        row_sums_A[positive], axis=0
+                b_vec = w_spx_aligned.loc[w_date].values.astype(float)
+
+                if turnover_lambda and turnover_lambda > 0.0:
+                    # prepare previous basis vector aligned to current basis_list
+                    w_prev_arr = np.zeros(len(self.basis_list), dtype=float)
+                    for i, b in enumerate(self.basis_list):
+                        if b in prev_full_row.index:
+                            w_prev_arr[i] = prev_full_row.at[b]
+
+                    # solve QP for basis weights (returns a Series indexed by basis_list)
+                    basis_w_row = WeightMapper.solve_qp_basis_weights(
+                        None,
+                        A_date,
+                        b_vec,
+                        self.basis_list,
+                        w_prev_arr,
+                        turnover_lambda,
+                    )
+                    basis_w_row.name = w_date
+                else:
+                    w_row = b_vec.reshape(1, -1)
+                    basis_w_row = pd.Series(
+                        (w_row @ A_date.values).flatten(),
+                        index=self.basis_list,
+                        name=w_date,
                     )
 
-                w_row = w_spx_aligned.loc[w_date].values.reshape(1, -1)
-                basis_w_row = pd.Series(
-                    (w_row @ A_date.values).flatten(),
-                    index=self.basis_list,
-                    name=w_date,
-                )
+                # update prev_full_row for warm-starting next date
+                prev_full_row = basis_w_row.copy()
                 basis_rows.append(basis_w_row)
-
             basis_weights = pd.DataFrame(basis_rows)
             basis_weights.index = w_spx_aligned.index
             return basis_weights
 
-        # snapshot
         A = pd.DataFrame(0.0, index=universe, columns=self.basis_list, dtype=float)
         for b in self.basis_list:
             if b in A.index and b in A.columns:
@@ -494,17 +531,12 @@ class StrategyBacktester(Backtester):
                 for col in self.coeffs_snap.columns:
                     col_str = str(col)
                     if col_str in A.columns:
-                        A.at[asset, col_str] = float(self.coeffs_snap.loc[asset, col])
-
-        row_sums_A = A.sum(axis=1)
-        positive = row_sums_A != 0.0
-        if positive.any():
-            A.loc[positive] = A.loc[positive].div(row_sums_A[positive], axis=0)
+                        A.at[asset, col_str] = self.coeffs_snap.loc[asset, col]
 
         basis_weights = self.w_spx.reindex(columns=universe).fillna(0.0).dot(A)
         return basis_weights
 
-    def run(self, tail_percent: float = 20.0):
+    def run(self, tail_percent: float = 20.0) -> None:
         """Execute the strategy backtest and persist results.
 
         This method loads inputs, computes basis weights (time-series or
@@ -526,7 +558,7 @@ class StrategyBacktester(Backtester):
         basis_returns = returns.reindex(columns=self.basis_list).fillna(0.0)
         b_prev = basis_weights.shift(1).reindex(index=returns.index).fillna(0.0)
         rep_returns = (b_prev * basis_returns).sum(axis=1)
-        # Delegate evaluation, saving and plotting to reusable helper
+
         summary = self.evaluate_and_save(
             idx_returns=idx_returns,
             rep_returns=rep_returns,
@@ -545,6 +577,47 @@ class StrategyBacktester(Backtester):
         print(f"Timeseries saved to: {out_dir / 'backtest_timeseries.csv'}")
         print(f"Summary saved to: {out_dir / 'backtest_summary.json'}")
 
+    def run_analysis(
+        self,
+        turnover_lambda: float = 0.0,
+        tail_percent: float = 20.0,
+        out_prefix: str = "analysis_backtest",
+    ) -> dict:
+        """Convenience wrapper to run the full strategy backtest.
+
+        This calls :py:meth:`load_inputs`, computes basis weights (optionally
+        using turnover-penalized QP via `compute_basis_weights_time_series`),
+        computes returns and evaluates results using
+        :py:meth:`Backtester.evaluate_and_save`.
+
+        Returns the saved summary dict.
+        """
+        # ensure inputs are loaded
+        self.load_inputs()
+
+        basis_weights = self.compute_basis_weights_time_series(
+            turnover_lambda=turnover_lambda
+        )
+        returns = self.compute_returns(self.prices)
+        w_prev = self.w_spx.shift(1).reindex(index=returns.index).fillna(0.0)
+        idx_returns = (w_prev * returns).sum(axis=1)
+
+        b_prev = basis_weights.shift(1).reindex(index=returns.index).fillna(0.0)
+        basis_returns = returns.reindex(columns=self.basis_list).fillna(0.0)
+        rep_returns = (b_prev * basis_returns).sum(axis=1)
+
+        summary = self.evaluate_and_save(
+            idx_returns=idx_returns,
+            rep_returns=rep_returns,
+            rep_weights=basis_weights,
+            tail_percent=tail_percent,
+            timeseries_name=f"{out_prefix}_timeseries.csv",
+            summary_name=f"{out_prefix}_summary.json",
+            plot_name=f"{out_prefix}_plot.png",
+            extra_meta={"turnover_lambda": turnover_lambda},
+        )
+        return summary
+
 
 class BaselineBacktester(Backtester):
     """Baseline replicator that uses the top-N index stocks as the basis.
@@ -554,21 +627,27 @@ class BaselineBacktester(Backtester):
     simple benchmark to compare against regression-based replication.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        prices_df: Optional[pd.DataFrame] = None,
+        weights_df: Optional[pd.DataFrame] = None,
+    ) -> None:
+        """Baseline backtester may be initialized with pre-loaded dataframes.
+
+        Args:
+            prices_df: Optional prices DataFrame (index=dates)
+            weights_df: Optional index weights DataFrame (dates x assets)
+        """
         super().__init__()
-        self.basis_df = None
+        self.prices = prices_df.copy() if prices_df is not None else None
+        self.w_spx = weights_df.copy() if weights_df is not None else None
 
-    def load_inputs(self):
-        """Load prices, index weights and the saved basis DataFrame.
+    def load_inputs(self) -> None:
+        """Load prices and index weights.
 
-        The saved basis file is expected under `outputs/basis_selected.csv`.
+        The baseline top-N replicator does not require a basis list.
         """
         self.load_prices_and_weights()
-        outputs_dir = _ROOT / "outputs"
-        basis_path = outputs_dir / "basis_selected.csv"
-        if not basis_path.exists():
-            raise FileNotFoundError(f"Basis list not found: {basis_path}")
-        self.basis_df = pd.read_csv(basis_path)
 
     def compute_topx_weights_time_series(self, top_n: int) -> pd.DataFrame:
         """Construct a time-series of replicate weights using the top-N index stocks.
@@ -588,7 +667,9 @@ class BaselineBacktester(Backtester):
         w_aligned = self.w_spx.reindex(columns=universe).fillna(0.0)
 
         rows = []
-        for dt in w_aligned.index:
+        for dt in tqdm(
+            list(w_aligned.index), desc="Top-N mapping", total=len(w_aligned.index)
+        ):
             w_row = w_aligned.loc[dt].astype(float)
             top = w_row.nlargest(top_n)
             total = top.sum()
@@ -610,7 +691,7 @@ class BaselineBacktester(Backtester):
         rep_weights.columns = universe
         return rep_weights
 
-    def run(self, top_n: int, tail_percent: float = 20.0):
+    def run(self, top_n: int, tail_percent: float = 20.0) -> None:
         """Run the baseline replicate backtest using top-N constituents.
 
         Args:
@@ -627,7 +708,6 @@ class BaselineBacktester(Backtester):
         b_prev = rep_weights.shift(1).reindex(index=returns.index).fillna(0.0)
         rep_returns = (b_prev * returns).sum(axis=1)
 
-        # Delegate evaluation, saving and plotting to reusable helper
         summary = self.evaluate_and_save(
             idx_returns=idx_returns,
             rep_returns=rep_returns,
@@ -636,7 +716,7 @@ class BaselineBacktester(Backtester):
             timeseries_name="baseline_backtest_timeseries.csv",
             summary_name="baseline_backtest_summary.json",
             plot_name="baseline_backtest_plot.png",
-            extra_meta={"top_n": int(top_n)},
+            extra_meta={"top_n": top_n},
         )
 
         out_dir = _ROOT / "backtest"
@@ -645,3 +725,40 @@ class BaselineBacktester(Backtester):
             print(f" - {k}: {v}")
         print(f"Timeseries saved to: {out_dir / 'baseline_backtest_timeseries.csv'}")
         print(f"Summary saved to: {out_dir / 'baseline_backtest_summary.json'}")
+
+    def run_analysis(
+        self,
+        top_n: int = 10,
+        tail_percent: float = 20.0,
+        out_prefix: str = "baseline_analysis",
+    ) -> dict:
+        """Run the baseline top-N backtest and persist outputs.
+
+        This method loads inputs, builds top-N replicate weights, computes
+        returns and delegates evaluation to :py:meth:`Backtester.evaluate_and_save`.
+        Returns the saved summary dict.
+        """
+        self.load_inputs()
+
+        rep_weights = self.compute_topx_weights_time_series(top_n)
+
+        returns = self.compute_returns(self.prices)
+        w_prev = self.w_spx.shift(1).reindex(index=returns.index).fillna(0.0)
+        idx_returns = (w_prev * returns).sum(axis=1)
+
+        b_prev = rep_weights.shift(1).reindex(index=returns.index).fillna(0.0)
+        rep_returns = (
+            b_prev * returns.reindex(columns=rep_weights.columns).fillna(0.0)
+        ).sum(axis=1)
+
+        summary = self.evaluate_and_save(
+            idx_returns=idx_returns,
+            rep_returns=rep_returns,
+            rep_weights=rep_weights,
+            tail_percent=tail_percent,
+            timeseries_name=f"{out_prefix}_timeseries.csv",
+            summary_name=f"{out_prefix}_summary.json",
+            plot_name=f"{out_prefix}_plot.png",
+            extra_meta={"top_n": top_n},
+        )
+        return summary

@@ -1,0 +1,10 @@
+{
+  "input": {
+    "basis": { "value": "analysis_outputs/basis_weights_timeseries.csv" },
+    "prices": { "value": "synthetic_data/prices_monthly.csv" },
+    "weights": { "value": "synthetic_data/market_index_weights.csv" }
+  },
+  "params": {
+    "tail_percent": { "value": 20.0 }
+  }
+}

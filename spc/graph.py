@@ -1,28 +1,28 @@
-"""Utilities for computing asset distances and tree topologies.
+"""Utilities for distances and tree topology helpers used by SPC.
 
-This module provides helpers to convert price/return series into correlation
-and distance matrices (including Ledoit-Wolf shrinkage and PCA denoising),
-and algorithms to build and analyze minimum spanning trees (MST).
+This module provides helpers to convert price/return series into
+correlation and distance matrices (with optional Ledoit-Wolf shrinkage
+and PCA denoising), construct minimum spanning trees (MST) and inspect
+tree properties such as node degrees, connected components and
+path-betweenness counts.
 
 Main components:
-- DistancesUtils: price/return -> correlation -> distance pipeline.
-- UnionFind: disjoint-set data structure for Kruskal's MST.
-- MST: build minimum spanning tree from an adjacency matrix.
-- TreeUtils: helpers for tree distances, components, degrees, and betweenness.
+        - :class:`DistancesUtils`: price/return -> correlation -> distance pipeline.
+        - :class:`UnionFind`: disjoint-set data structure used by Kruskal's MST.
+        - :class:`MST`: build an MST from a full adjacency/weight matrix.
+        - :class:`TreeUtils`: utilities for tree distances, components and
+            centrality-like counts.
 """
 
+from __future__ import annotations
+
 import heapq
-import logging
 import numpy as np
 import pandas as pd
-from typing import Optional
 from sklearn.decomposition import PCA
 from sklearn.covariance import LedoitWolf
 from typing import Dict, List, Optional, Sequence, Set, Tuple, Any
 from collections import deque
-
-# Module logger
-logger = logging.getLogger(__name__)
 
 
 class DistancesUtils:
@@ -51,7 +51,7 @@ class DistancesUtils:
         """
         if not isinstance(corr_df, pd.DataFrame):
             raise TypeError("corr_df must be a pandas DataFrame.")
-        corr_vals = corr_df.where(corr_df.isna(), corr_df.clip(lower=-1.0, upper=1.0))
+        corr_vals = corr_df.clip(lower=-1.0, upper=1.0)
         dist = np.sqrt(2.0 * (1.0 - corr_vals))
         np.fill_diagonal(dist.values, 0.0)
         return dist.astype(float)
@@ -89,21 +89,31 @@ class DistancesUtils:
         """
         end_ts = pd.Timestamp(end_date)
 
-        if window is None:
-            prices_t = prices.loc[:end_ts]
-        else:
-            prices_t = prices.loc[:end_ts].tail(window)
-
-        dist = DistancesUtils.price_to_distance_df(
-            prices_t,
-            min_periods=min_periods,
-            corr_method=corr_method,
-            shrink_method=shrink_method,
-            pca_n_components=pca_n_components,
-            pca_explained_variance=pca_explained_variance,
+        prices_t = (
+            prices.loc[:end_ts].tail(window)
+            if window is not None
+            else prices.loc[:end_ts]
         )
 
-        return dist
+        ret = DistancesUtils.price_to_return_df(prices_t)
+
+        if shrink_method is None:
+            corr = DistancesUtils.return_to_corr_df(
+                ret, min_periods=min_periods, corr_method=corr_method
+            )
+        elif shrink_method == "lw":
+            corr = DistancesUtils.lw_shrink_corr(ret)
+        elif shrink_method == "pca":
+            corr = DistancesUtils.pca_denoise_corr(
+                ret,
+                n_components=pca_n_components,
+                explained_variance=pca_explained_variance,
+                min_periods=min_periods,
+            )
+        else:
+            raise ValueError("shrink_method must be one of {None, 'lw', 'pca'}")
+
+        return DistancesUtils.corr_to_distance_df(corr)
 
     @staticmethod
     def price_to_return_df(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -151,7 +161,7 @@ class DistancesUtils:
         return corr
 
     @staticmethod
-    def cov_to_corr_matrix(cov_matrix: np.ndarray, cols: list[str]):
+    def cov_to_corr_matrix(cov_matrix: np.ndarray, cols: List[str]) -> pd.DataFrame:
         """Convert a covariance matrix to a correlation DataFrame.
 
         Args:
@@ -159,7 +169,7 @@ class DistancesUtils:
             cols (list[str]): Column/row labels for the resulting DataFrame.
 
         Returns:
-            pandas.DataFrame: Correlation matrix with labels ``cols``.
+            pd.DataFrame: Correlation matrix with labels ``cols``.
         """
         # Convert to correlation
         diag = np.diag(cov_matrix).copy()
@@ -236,7 +246,7 @@ class DistancesUtils:
 
         # Reconstruct correlation matrix using truncated components
         corr_reconstructed = pca.inverse_transform(pca.transform(corr_matrix))
-        logger.debug("PCA reconstructed correlation matrix:", corr_reconstructed)
+
         # Enforce symmetry
         corr_reconstructed = 0.5 * (corr_reconstructed + corr_reconstructed.T)
 
@@ -319,8 +329,7 @@ class DistancesUtils:
         else:
             raise ValueError("shrink_method must be one of {None, 'lw', 'pca'}")
 
-        dist = DistancesUtils.corr_to_distance_df(corr)
-        return dist
+        return DistancesUtils.corr_to_distance_df(corr)
 
 
 class UnionFind:
@@ -330,7 +339,7 @@ class UnionFind:
     Kruskal's algorithm when building minimum spanning trees.
     """
 
-    def __init__(self, nodes: list[str]) -> None:
+    def __init__(self, nodes: List[str]) -> None:
         """Create a UnionFind structure for the provided nodes.
 
         Args:
@@ -406,7 +415,7 @@ class MST:
     """
 
     def __init__(
-        self, adj_matrix: list[list[float]], nodes: Optional[list[str]] = None
+        self, adj_matrix: List[List[float]], nodes: Optional[List[str]] = None
     ) -> None:
         """Initialize and compute the MST for the given adjacency matrix.
 
@@ -432,7 +441,7 @@ class MST:
         self.node_index = {node: i for i, node in enumerate(self.nodes)}
         self.mst_adj = self._kruskal()
 
-    def _make_edges_heap(self) -> list[tuple[float, int, int]]:
+    def _make_edges_heap(self) -> List[Tuple[float, int, int]]:
         """Create a min-heap of edges (weight, i, j) for Kruskal's algorithm."""
         edges_heap = []
         for i in range(self.n):
@@ -442,12 +451,13 @@ class MST:
         heapq.heapify(edges_heap)
         return edges_heap
 
-    def _kruskal(self) -> dict[str, list[tuple[str, float]]]:
-        """Run Kruskal's algorithm and return MST adjacency as a dict.
+    def _kruskal(self) -> Dict[str, List[Tuple[str, float]]]:
+        """Run Kruskal's algorithm and return MST adjacency as a dictionary.
 
         Returns:
-            dict: Mapping node -> list of (neighbor, weight) tuples representing
-            the undirected MST adjacency.
+            Dict[str, List[Tuple[str, float]]]: Mapping node -> list of
+            (neighbor, weight) tuples representing the undirected MST
+            adjacency.
         """
         uf = UnionFind(self.nodes)
         edges_heap = self._make_edges_heap()
@@ -465,11 +475,12 @@ class MST:
 
         return mst_adj_dict
 
-    def get_adj_dict(self) -> dict[str, list[tuple[str, float]]]:
+    def get_adj_dict(self) -> Dict[str, List[Tuple[str, float]]]:
         """Return the MST adjacency dictionary.
 
         Returns:
-            dict: Node -> list of (neighbor, weight) tuples.
+            Dict[str, List[Tuple[str, float]]]: Node -> list of
+            (neighbor, weight) tuples.
         """
         return self.mst_adj
 
@@ -487,12 +498,31 @@ class TreeUtils:
         """Return the list of nodes in the adjacency dictionary.
 
         Args:
-            adj (dict): Adjacency mapping node -> list[(neighbor, weight)].
+            adj (Dict[Any, List[Tuple[Any, float]]]): Adjacency mapping
+                node -> list[(neighbor, weight)].
 
         Returns:
-            list: Node labels.
+            List[Any]: Node labels.
         """
         return list(adj.keys())
+
+    @staticmethod
+    def argmax_dict(d: Dict[Any, float]) -> Optional[Any]:
+        """Return the key with maximum value in mapping ``d`` or ``None``.
+
+        Args:
+            d (Dict[Any, float]): Mapping from keys to numeric scores.
+
+        Returns:
+            Any | None: Key with the maximum score or ``None`` when ``d`` is empty.
+
+        This helper is used in selection routines to pick an initial seed
+        when a mapping of per-node scores is available.
+        """
+        if not d:
+            return None
+        # Use max over keys with value as key function; return the argmax key
+        return max(d.keys(), key=lambda k: d[k])
 
     @staticmethod
     def all_pairs_tree_distance(
@@ -563,7 +593,7 @@ class TreeUtils:
             u = q.popleft()
             for v, w in adj[u]:
                 if v not in d:
-                    d[v] = d[u] + float(w)
+                    d[v] = d[u] + w
                     q.append(v)
         return d
 
@@ -580,23 +610,48 @@ class TreeUtils:
         Returns:
             list[set]: List of connected component node sets after removal.
         """
+        # Compute the set of nodes that remain after removing the requested
+        # nodes. Using a set gives O(1) membership checks during BFS below.
         remaining = set(adj.keys()) - remove
+
+        # `seen` keeps track of nodes we've already assigned to a component
+        # so we never process a node twice. `comps` will accumulate the
+        # discovered connected components (each as a set of node labels).
         seen = set()
         comps = []
+
+        # Iterate over every remaining node. If the node is unvisited we
+        # start a BFS to discover its entire connected component. If it's
+        # already in `seen` it has been discovered as part of a previous BFS.
         for s in remaining:
             if s in seen:
                 continue
+
+            # Begin a new component discovery rooted at `s`.
             comp = set()
             q = deque([s])
             seen.add(s)
+
+            # Standard BFS loop: pop a node, add to current component, and
+            # enqueue its unvisited neighbors. Adjacency entries are
+            # `(neighbor, weight)` pairs; weights are ignored because
+            # connectivity (component membership) depends only on the
+            # presence of an edge, not its weight.
             while q:
                 u = q.popleft()
                 comp.add(u)
                 for v, _ in adj[u]:
+                    # Only consider neighbors that still exist in the
+                    # `remaining` set and haven't been seen yet.
                     if v in remaining and v not in seen:
                         seen.add(v)
                         q.append(v)
+
+            # BFS finished: `comp` now contains one connected component of
+            # the graph after removing the `remove` nodes. Append it to the
+            # result list and continue scanning for other components.
             comps.append(comp)
+
         return comps
 
     @staticmethod
@@ -623,42 +678,77 @@ class TreeUtils:
         ``betw(u) = sum_{i<j} s_i * s_j`` which is computed efficiently.
 
         Args:
-            adj (dict): Tree adjacency mapping.
+            adj (Dict[Any, List[Tuple[Any, float]]]): Tree adjacency mapping.
 
         Returns:
-            dict: Mapping node -> integer betweenness count.
+            Dict[Any, int]: Mapping node -> integer betweenness count.
         """
         nodes = list(adj.keys())
         n = len(nodes)
         if n == 0:
             return {}
 
-        # Root at arbitrary node and compute subtree sizes via DFS
+        # Overview of approach (optimized for trees):
+        # 1. Root the tree at an arbitrary node and compute a parent map plus
+        #    a DFS ordering (children discovered after parent). This lets us
+        #    compute subtree sizes bottom-up.
+        # 2. For each node u, removing u partitions the tree into several
+        #    connected components (the subtrees rooted at u's children, plus
+        #    the remainder that contains u's parent). The sizes of these
+        #    components determine how many source-destination pairs have a
+        #    path that goes through u.
+        # 3. If the component sizes are s_1, s_2, ..., s_m (summing to
+        #    total = n-1, excluding u itself), the number of unordered
+        #    pairs whose path goes through u is sum_{i<j} s_i * s_j. This
+        #    equals (total^2 - sum_i s_i^2) / 2 which we compute below.
+
+        # Root at an arbitrary node and compute parent pointers using DFS.
         root = nodes[0]
         parent = {root: None}
-        order = [root]
+        order: List[Any] = [root]
         stack = [root]
         while stack:
             u = stack.pop()
             for v, _ in adj[u]:
+                # skip back-edge to parent
                 if v == parent.get(u):
                     continue
                 parent[v] = u
                 stack.append(v)
                 order.append(v)
 
-        subtree = {u: 1 for u in nodes}
+        # Compute subtree sizes in reverse DFS order (children before parent).
+        # subtree[u] counts the number of nodes in the subtree rooted at u
+        # including u itself.
+        subtree: Dict[Any, int] = {u: 1 for u in nodes}
         for u in reversed(order):
             for v, _ in adj[u]:
+                # if v is a child of u, add its subtree size
                 if parent.get(v) == u:
                     subtree[u] += subtree[v]
 
-        betw = {}
+        # Now compute betweenness counts. For each node u, removing u
+        # produces components whose sizes are the subtree sizes of its
+        # children (those v with parent[v] == u). If u has a parent, there is
+        # an additional component that consists of all nodes not in u's
+        # subtree; its size equals (n - subtree[u]). We exclude u itself
+        # from these component size calculations, so the sum of component
+        # sizes equals total = n - 1.
+        betw: Dict[Any, int] = {}
         total = n - 1
         for u in nodes:
+            # collect sizes of components formed after removing u
             comp_sizes = [subtree[v] for v, _ in adj[u] if parent.get(v) == u]
+            # include the remainder component (above u) when u is not root
             if parent.get(u) is not None:
-                comp_sizes.append(total - subtree[u])
-            sum_sq = sum(s * s for s in comp_sizes)
-            betw[u] = (total * total - sum_sq) // 2
+                # remainder should be the nodes outside u's subtree (exclude u),
+                # i.e. n - subtree[u]. Using `total - subtree[u]` was incorrect.
+                comp_sizes.append(n - subtree[u])
+
+            # Use algebraic identity: sum_{i<j} s_i*s_j = (total^2 - sum_i s_i^2)/2
+            # This counts unordered pairs of nodes lying in different components,
+            # which are exactly the node pairs whose unique path passes through u.
+            sum_sq = sum(s**2 for s in comp_sizes)
+            betw[u] = (total**2 - sum_sq) // 2
+
         return betw

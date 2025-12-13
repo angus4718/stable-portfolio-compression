@@ -1,0 +1,61 @@
+{
+  "description": "Configuration for running the local ridge regression pipeline (LocalRidgeRunner).",
+
+  "input": {
+    "prices_path": {
+      "value": "synthetic_data/prices_monthly.csv",
+      "description": "CSV of monthly prices (index=dates, cols=tickers) used to compute returns and distances"
+    }
+  },
+
+  "output": {
+    "basis_path": {
+      "value": "outputs/basis_selected.csv",
+      "description": "Path to the basis list CSV (one-column 'basis' or timeseries). The runner will filter this list to available tickers."
+    }
+  },
+
+  "regression": {
+    "ridge_alpha": {
+      "value": 0.0,
+      "description": "Ridge regularization strength (alpha) passed to sklearn.linear_model.Ridge",
+      "type": "float",
+      "min": 0.0
+    },
+    "q_neighbors": {
+      "value": 3,
+      "description": "Optional maximum number of basis neighbors used as regressors per asset. If null, all available basis are considered.",
+      "type": ["integer", "null"],
+      "min": 1
+    }
+  },
+
+  "distance_computation": {
+    "min_periods": {
+      "value": 1,
+      "description": "Minimum overlapping observations required when computing pairwise correlations/distances",
+      "type": "integer",
+      "min": 1
+    },
+    "corr_method": {
+      "value": "pearson",
+      "description": "Correlation method used for distance computation ('pearson' or 'spearman')"
+    },
+    "shrink_method": {
+      "value": null,
+      "description": "Optional covariance shrinkage/denoising method (e.g. 'lw' or 'pca'). If null, no shrinkage applied.",
+      "type": ["string", "null"]
+    },
+    "pca_n_components": {
+      "value": null,
+      "description": "When using PCA denoising, number of components to keep (null to infer by explained variance)",
+      "type": ["integer", "null"],
+      "min": 1
+    },
+    "pca_explained_variance": {
+      "value": null,
+      "description": "When using PCA denoising, fraction of explained variance to retain (0-1). If set, `pca_n_components` may be null.",
+      "type": ["number", "null"]
+    }
+  }
+}

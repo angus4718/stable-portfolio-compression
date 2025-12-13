@@ -1,0 +1,35 @@
+{
+  "description": "Configuration for mapping index weights to basis weights (scripts/weight_mapping.py / WeightMapper).",
+
+  "input": {
+    "weights_path": {
+      "value": "synthetic_data/market_index_weights.csv",
+      "description": "CSV of index market-cap weights or index weights used as the target 'b' in mapping. Rows are assets (or dates if timeseries)."
+    },
+    "coefficients_pivot_path": {
+      "value": "outputs/coefficients_ridge_panel.csv",
+      "description": "Pivoted coefficients CSV (assets x basis) produced by the local ridge runner. For per-date QP mapping, provide a by-date long-form coefficients file to the backtester instead."
+    }
+  },
+
+  "output": {
+    "weights_output_path": {
+      "value": "outputs/weights_basis.csv",
+      "description": "Path to save computed basis weights. Can be a single-row snapshot or a timeseries depending on input coeffs."
+    }
+  },
+
+  "mapping": {
+    "turnover_lambda": {
+      "value": 0.0,
+      "description": "Turnover regularization parameter for QP mapping. When > 0 and a by-date coefficients timeseries is provided, per-date QPs penalize deviations from previous weights.",
+      "type": "number",
+      "min": 0.0
+    },
+    "previous_weights_path": {
+      "value": null,
+      "description": "Optional CSV path containing previous basis weights to initialize the first QP (one row of basis weights).",
+      "type": ["string", "null"]
+    }
+  }
+}

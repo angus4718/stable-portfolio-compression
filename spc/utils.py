@@ -1,65 +1,112 @@
 """Small shared utilities for SPC scripts and modules."""
 
+from __future__ import annotations
+
 from typing import Any
 from pathlib import Path
 import pandas as pd
 
 
 def cfg_val(config: dict, section: str, key: str, default: Any = None) -> Any:
-    """
-    Retrieve the value of a specific key within a section of a configuration dictionary.
-    It looks for the value at `config[section][key]['value']`. If any part of the path is
-    missing, the function returns the specified default value.
+    """Return a typed config value from a nested config dictionary.
+
+    The configuration format used in this project stores values under
+    ``config[section][key]['value']``. This helper safely retrieves that
+    nested value and falls back to ``default`` when any part of the path
+    is missing.
+
     Args:
-        config (dict): The configuration dictionary to search.
-        section (str): The top-level key in the configuration dictionary.
-        key (str): The second-level key within the specified section.
-        default (Any, optional): The value to return if the specified path does not exist.
-            Defaults to None.
+        config (dict): Configuration dictionary.
+        section (str): Top-level configuration section.
+        key (str): Second-level key within the section.
+        default (Any, optional): Value to return when the requested path is
+            not present. Defaults to ``None``.
+
     Returns:
-        Any: The value found at `config[section][key]['value']`, or the default value
-        if the path does not exist.
+        Any: The value stored at ``config[section][key]['value']`` or
+        ``default`` when the path does not exist.
     """
     return config.get(section, {}).get(key, {}).get("value", default)
 
 
 def load_basis_list_from_path(basis_path: Path) -> list[str]:
-    """
-    Read a CSV file containing a basis list and return a list of tickers.
-    This function reads a CSV file specified by the `basis_path` parameter and
-    extracts a list of tickers. The CSV file can either have a column named
-    `ticker` or be a single-column CSV. If the `ticker` column exists, its
-    values are returned as a list of strings. Otherwise, the values from the
-    first column are returned as strings.
+    """Load a basis list CSV and return tickers as a list of strings.
+
+    The function supports multiple CSV layouts commonly produced by the
+    project's tooling:
+        - A CSV with an explicit ``ticker`` column (one ticker per row).
+        - A single-column CSV where each row is a ticker.
+        - A timeseries CSV with a ``basis`` column where rows are either
+          individual tickers or a delimited list (e.g. ``"A;B;C"``) — in
+          that case the most recent non-null row is used and split on ``;``
+          or ``,``.
+
     Args:
-        basis_path (Path): The file path to the CSV file containing the basis list.
+        basis_path (Path): Path to the basis CSV file.
+
     Returns:
-        list[str]: A list of tickers extracted from the CSV file.
+        list[str]: List of tickers parsed from the file (may be empty).
     """
     basis_df = pd.read_csv(basis_path)
+    # If the file contains an explicit 'ticker' column, use it as a simple list
     if "ticker" in basis_df.columns:
         return basis_df["ticker"].astype(str).tolist()
+
+    # If the file is a timeseries with a 'basis' column containing
+    # delimited tickers per date (e.g. "A;B;C"), pick the most recent
+    # non-null entry and split it into a list. Support ';' or ',' separators.
+    if "basis" in basis_df.columns:
+        # If the 'basis' column contains multiple rows where each row is a
+        # single ticker, treat it as a simple one-per-row list. If the file
+        # contains a single row whose value is a delimited list (e.g.
+        # "A;B;C"), treat that as a timeseries-style entry and split it.
+        non_null = basis_df["basis"].dropna().astype(str)
+        if len(non_null) == 0:
+            return []
+
+        # If there is more than one non-null row and none look like a
+        # delimited list, assume each row is a separate ticker.
+        if len(non_null) > 1:
+            # If any row contains a delimiter, assume timeseries-of-lists
+            if any((";" in v or "," in v) for v in non_null):
+                last = non_null.iloc[-1]
+                sep = ";" if ";" in last else ","
+                items = [s.strip() for s in last.split(sep) if s.strip()]
+                return items
+            # otherwise return each row as a ticker
+            return non_null.tolist()
+
+        # Single non-null row: split if delimited, otherwise return single ticker
+        last = non_null.iloc[-1]
+        sep = ";" if ";" in last else "," if "," in last else None
+        if sep is not None:
+            items = [s.strip() for s in last.split(sep) if s.strip()]
+            return items
+        return [last.strip()] if last.strip() else []
+
+    # Otherwise, assume a single-column CSV where each row is a ticker
     return basis_df.iloc[:, 0].astype(str).tolist()
 
 
 def resolve_output_and_input_paths(
     config: dict, root: Path
-) -> tuple[Path, Path, Path, Path, Path]:
-    """
-    Resolves and returns the output and input file paths based on the provided configuration and root directory.
+) -> tuple[Path, Path, Path, Path]:
+    """Resolve commonly-used input/output paths from a config and root.
+
+    This helper centralizes the project's lightweight path conventions and
+    ensures output directories exist.
+
     Args:
-        config (dict): A dictionary containing configuration values for input and output paths.
-        root (Path): The root directory to resolve relative paths.
+        config (dict): Configuration dictionary with optional keys used by
+            ``cfg_val`` (the function expects nested value objects under
+            ``['value']``).
+        root (Path): Root directory used to resolve relative paths.
+
     Returns:
-        tuple[Path, Path, Path, Path, Path]: A tuple containing:
-            - outputs_dir (Path): The directory where output files will be stored.
-            - basis_path (Path): The resolved path for the basis file.
-            - coeffs_path (Path): The path for the coefficients file.
-            - coeffs_ts_path (Path): The path for the coefficients timeseries file.
-            - weights_path (Path): The resolved path for the weights file.
-    Notes:
-        - If the specified basis or weights file does not exist at the given path, an alternative path is checked.
-        - The `outputs` directory is created if it does not already exist.
+        tuple[Path, Path, Path, Path]: ``(outputs_dir, basis_path,
+        coeffs_ts_path, weights_path)`` where ``coeffs_ts_path`` is placed
+        inside ``outputs_dir`` and other paths are resolved from config
+        defaults when not provided.
     """
     outputs_dir = root / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -68,57 +115,44 @@ def resolve_output_and_input_paths(
         config, "output", "basis_path", "outputs/basis_selected.csv"
     )
     basis_path = Path(basis_cfg_val)
-    if not basis_path.exists():
-        alt = outputs_dir / basis_path.name
-        if alt.exists():
-            basis_path = alt
 
-    coeffs_path = outputs_dir / "coefficients_ridge.csv"
-    coeffs_ts_path = outputs_dir / "coefficients_ridge_timeseries.csv"
+    coeffs_ts_path = outputs_dir / "coefficients_ridge_panel.csv"
 
     weights_cfg_val = cfg_val(
         config, "input", "weights_path", "synthetic_data/market_index_weights.csv"
     )
     weights_path = Path(weights_cfg_val)
-    if not weights_path.exists():
-        altw = root / weights_path
-        if altw.exists():
-            weights_path = altw
 
-    return outputs_dir, basis_path, coeffs_path, coeffs_ts_path, weights_path
+    return outputs_dir, basis_path, coeffs_ts_path, weights_path
 
 
 def load_prices_csv(path: Path) -> pd.DataFrame:
-    """
-    Load a CSV file containing price data into a pandas DataFrame.
+    """Load a CSV of prices and return a DataFrame indexed by date.
 
-    The CSV file is expected to have its first column as the index, which will
-    be parsed as dates. The resulting DataFrame will be sorted by its index.
+    The CSV is read with the first column used as the index and parsed as
+    datetimes. The returned DataFrame is sorted by its index.
 
     Args:
-        path (Path): The file path to the CSV file.
+        path (Path): Path to the CSV file.
 
     Returns:
-        pd.DataFrame: A pandas DataFrame containing the loaded and sorted data.
+        pd.DataFrame: Prices DataFrame indexed by date.
     """
     df = pd.read_csv(path, index_col=0, parse_dates=True)
     return df.sort_index()
 
 
 def load_weights_csv(path: Path) -> pd.DataFrame:
-    """
-    Load a CSV file containing weights into a pandas DataFrame.
+    """Load a weights CSV and return a DataFrame indexed by date.
 
-    This function reads a CSV file from the specified path, using the first column
-    as the index and parsing dates where applicable. The resulting DataFrame is
-    sorted by its index before being returned.
+    Reads the CSV using the first column as the index (parsed as datetimes
+    when possible) and returns the DataFrame sorted by index.
 
     Args:
-        path (Path): The file path to the CSV file.
+        path (Path): Path to the CSV file.
 
     Returns:
-        pd.DataFrame: A pandas DataFrame containing the data from the CSV file,
-        sorted by index.
+        pd.DataFrame: Weights DataFrame indexed by date.
     """
     df = pd.read_csv(path, index_col=0, parse_dates=True)
     return df.sort_index()

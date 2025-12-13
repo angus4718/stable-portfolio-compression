@@ -21,10 +21,6 @@ def load_data(data_dir: Path):
     weights_path = data_dir / "market_index_weights.csv"
     caps_path = data_dir / "market_cap_values.csv"
 
-    missing = [p for p in (prices_path, weights_path, caps_path) if not p.exists()]
-    if missing:
-        raise FileNotFoundError(f"Missing files: {missing}")
-
     prices = pd.read_csv(prices_path, parse_dates=[0], index_col=0)
     weights = pd.read_csv(weights_path, parse_dates=[0], index_col=0)
     caps = pd.read_csv(caps_path, parse_dates=[0], index_col=0)
@@ -48,7 +44,6 @@ def plot_price_samples(
     # Choose top_n by final market cap
     final_caps = market_caps.iloc[-1].dropna()
     top = final_caps.sort_values(ascending=False).head(top_n).index.tolist()
-    # plotting style is set centrally (see `main`); fall back if missing
     fig, ax = plt.subplots(figsize=(12, 6))
     prices[top].plot(ax=ax, linewidth=1.5)
     ax.set_title(f"Sample Prices — Top {top_n} by Final Market Cap")
@@ -68,19 +63,6 @@ def plot_market_weights(weights: pd.DataFrame, out_dir: Path, top_n: int = 12):
 
     fig, ax = plt.subplots(figsize=(12, 6))
     stacked = weights[top].fillna(0)
-    # If any small negative rounding errors exist, clip them to zero for plotting.
-    if (stacked < 0).any().any():
-        print(
-            "Note: negative weight values detected — clipping negatives to zero for plotting."
-        )
-    stacked = stacked.clip(lower=0.0)
-
-    # Sanity check: top-N contributions should be <= 1. Warn if not (numeric issues).
-    top_sums = stacked.sum(axis=1)
-    if (top_sums > 1.000001).any():
-        print(
-            "WARNING: top-N weights exceed 1.0 for some rows — this indicates inconsistent weights in the dataset."
-        )
 
     stacked.plot.area(ax=ax, linewidth=0)
     ax.set_title(f"Market Weights (Stacked) — Top {top_n} by Average Weight")
@@ -240,7 +222,6 @@ def plot_cumulative_returns(
 
     fig, ax = plt.subplots(figsize=(12, 6))
     index_level.plot(ax=ax, label="Index (MC-weighted)", linewidth=2, color="black")
-    # plot top series using pandas to avoid mixed converters
     cum_top.plot(ax=ax, alpha=0.9, linewidth=1)
 
     ax.set_title("Cumulative Growth: Index and Top Assets")
@@ -256,7 +237,6 @@ def plot_cumulative_returns(
 def plot_turnover(weights: pd.DataFrame, out_dir: Path):
     """Compute simple monthly turnover (fraction of constituents replaced)."""
     dates = weights.index
-    # Count-based (set membership) turnover
     active_sets = [set(weights.columns[weights.loc[d].notna()]) for d in dates]
     count_turnovers = []
     for i in range(1, len(active_sets)):
@@ -305,15 +285,12 @@ def main():
 
     print(f"Saving plots to: {out_dir}")
 
-    # Initial diagnostics: market-cap distribution at simulation start
     plot_initial_marketcap_distribution(caps, out_dir)
-
     plot_price_samples(prices, caps, out_dir, top_n=top_n)
     plot_market_weights(weights, out_dir, top_n=top_n)
     plot_market_caps(caps, out_dir, top_n=top_n)
     plot_concentration(weights, out_dir, top_k=top_k)
     plot_constituent_counts(weights, out_dir)
-    # Additional diagnostics
     plot_correlation_heatmap(prices, out_dir, top_n=top_n)
     plot_returns_distribution(prices, out_dir, top_n=top_n)
     plot_cumulative_returns(caps, prices, out_dir, top_n=top_n)

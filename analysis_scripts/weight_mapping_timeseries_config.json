@@ -1,0 +1,13 @@
+{
+  "input": {
+    "coeffs_ts_path": { "value": "analysis_outputs/coefficients_ridge_timeseries_by_date.csv" },
+    "weights_path": { "value": "synthetic_data/market_index_weights.csv" }
+  },
+  "output": {
+    "basis_path": { "value": "analysis_outputs/basis_selected.csv" },
+    "out_dir": { "value": "analysis_outputs" }
+  },
+  "params": {
+    "turnover_lambda": { "value": 0.01 }
+  }
+}
