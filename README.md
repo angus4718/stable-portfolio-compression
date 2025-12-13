@@ -337,7 +337,7 @@ python .\scripts\weight_mapping.py
 **Understanding the output:**
 - Each row represents one time period
 - Each column is a basis asset
-- Values sum to 1 (full portfolio allocation)
+- Values don't necessarily sum to 1; the remaining weight is in cash
 - High weight on a basis asset means it represents significant index exposure
 
 **Note:** The main `scripts/` pipeline focuses on basis selection and weight mapping. For backtesting and performance evaluation, see the `analysis_scripts/` folder which includes time-series backtesting with `strategy_backtest.py` and `baseline_backtest.py`.
