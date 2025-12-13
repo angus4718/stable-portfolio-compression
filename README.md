@@ -119,7 +119,7 @@ Runnable entry points for the pipeline. All scripts should be run from the proje
    
 4. **`weight_mapping.py`** : Maps index weights to basis weights
    - Reads: Coefficients, index weights, basis list
-   - Outputs: `basis_weights.csv` (normalized), `basis_weights_raw.csv` (unnormalized)
+   - Outputs: `basis_weights.csv`
 
 **Diagnostic Scripts:**
 - **`visualize_synthetic.py`** : Plots synthetic data generation results (price paths, correlations, basic diagnostics)
@@ -212,8 +212,7 @@ Pipeline-generated results:
 - **`coefficients_ridge_panel.csv`** : Regression coefficients (rows = time, columns = asset->basis coefficient triplets). Typically shaped as `date`, `asset_id`, `basis_asset_id`, `coefficient`.
 - **`recon_returns.csv`** : Reconstructed portfolio returns using basis weights.
 - **`regression_errors.csv`** : Per-asset fit diagnostics (Asset ID, RMSE, $R^2$, average coefficient magnitude).
-- **`basis_weights.csv`** : Basis weights normalized to sum to 1 at each period.
-- **`basis_weights_raw.csv`** : Basis weights before normalization (for debugging).
+- **`basis_weights.csv`** : Basis weights at each period.
 
 ### Configuration (`scripts/`)
 - **`basis_config.json`** : Main configuration for distance computation, basis selection, regression, and I/O paths. Parameters:
@@ -333,8 +332,7 @@ python .\scripts\weight_mapping.py
 - Reads: basis list, index weights, regression coefficients
 - Computes: basis-level weights that replicate the original index exposure
 - Outputs:
-  - `basis_weights.csv` : Final basis weights (normalized to sum to 1)
-  - `basis_weights_raw.csv` : Raw weights before normalization (for debugging)
+  - `basis_weights.csv` : Final basis weights.
 
 **Understanding the output:**
 - Each row represents one time period
